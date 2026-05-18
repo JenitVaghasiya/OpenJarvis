@@ -25,7 +25,7 @@ bench  = "swebench-verified"
 n      = 3
 local  = { model = "Qwen/Qwen3.5-27B-FP8", endpoint = "http://localhost:8001/v1" }
 cloud  = { model = "claude-opus-4-7",      endpoint = "anthropic" }
-method_cfg = {}
+method_cfg = { swe_use_agent_loop = true, swe_max_turns = 50, swe_bash_timeout_s = 120 }
 concurrency = 3
 
 [cells.skillorchestra-gaia-qwen27b-opus-30]
@@ -43,5 +43,5 @@ bench  = "swebench-verified"
 n      = 30
 local  = { model = "Qwen/Qwen3.5-27B-FP8", endpoint = "http://localhost:8001/v1" }
 cloud  = { model = "claude-opus-4-7",      endpoint = "anthropic" }
-method_cfg = {}
+method_cfg = { swe_use_agent_loop = true, swe_max_turns = 50, swe_bash_timeout_s = 120 }
 concurrency = 3

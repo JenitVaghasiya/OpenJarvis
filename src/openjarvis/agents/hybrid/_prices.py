@@ -19,7 +19,12 @@ PRICES: dict[str, tuple[float, float]] = {
     "gpt-5-mini":                  (0.25, 2.00),
     "gpt-5-mini-2025-08-07":       (0.25, 2.00),
     "gpt-4o":                      (0.15, 0.60),
+    # Gemini Developer API prices (USD per 1M tokens), 2025-12 list price.
+    # 2.5 Pro uses tiered pricing (>200K context = $2.50/$15); we charge the
+    # low-context tier since GAIA / SWE-bench prompts stay well under 200K.
     "gemini-2.5-pro":              (1.25, 10.0),
+    "gemini-2.5-flash":            (0.30, 2.50),
+    "gemini-2.5-flash-lite":       (0.10, 0.40),
 }
 
 # Models whose API rejects an explicit `temperature` param — callers should

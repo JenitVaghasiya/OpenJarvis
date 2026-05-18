@@ -1,7 +1,8 @@
 # Hybrid local+cloud paradigm agents
 
-Six paradigms ported from
-[`/matx/u/aspark/hybrid-local-cloud-compute`](../../../../../) — each is
+Six paradigms ported from the legacy hybrid-local-cloud-compute harness
+([github.com/andrewparkk1/hybrid-local-cloud-compute](https://github.com/andrewparkk1/hybrid-local-cloud-compute);
+results archived at `~/.openjarvis/experiments/hybrid/`) — each is
 registered as a standard OpenJarvis agent so the rest of the platform
 (SDK, CLI, distillation, evals) can use them like any other agent.
 
@@ -53,7 +54,7 @@ source .env                                           # API keys
 #       --model Qwen/Qwen3.5-27B-FP8 --port 8001 ...
 
 # 2. (Optional) for Minions: install the upstream library
-.venv/bin/uv pip install -e /matx/u/aspark/hybrid-local-cloud-compute/external/minions
+.venv/bin/uv pip install -e /matx/u/aspark/external/minions
 
 # 3. Run a smoke cell
 .venv/bin/python -m openjarvis.agents.hybrid.runner \
@@ -80,7 +81,7 @@ That appends a `[cells.<name>]` block to
 ## How good is each paradigm?
 
 Numbers from the upstream hybrid harness
-(`/matx/u/aspark/hybrid-local-cloud-compute/docs/results.md`) at full N —
+(`~/.openjarvis/experiments/hybrid/docs/results.md`) at full N —
 GAIA val n=165, SWE-bench-Verified n=500. Local = Qwen-3.5-27B-FP8, cloud
 = Opus 4.7. Cloud-only baseline: GAIA 0.570 / $1.09, SWE 0.238 / $0.95.
 

@@ -167,6 +167,7 @@ markers = [
     "nvidia: requires NVIDIA GPU",
     "slow: long-running test",
     "live_external: requires HERMES_AGENT_PATH and OPENCLAW_PATH; spawns real foreign-framework subprocesses",
+    "modal: requires Modal token + network; runs real swebench harness on Modal",
 ]
 
 [tool.ruff]

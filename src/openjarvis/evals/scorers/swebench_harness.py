@@ -19,7 +19,12 @@ with two upstream-`swebench` patches applied at import time:
    ``swebench/harness/modal_eval/run_evaluation_modal.py:66`` writes to
    ``/sys/fs/cgroup/cpu/cpu.shares`` (cgroup v1). Modal v2 sandboxes use
    cgroup v2 — the path doesn't exist and every sandbox dies on the write.
-   Wrap the write in try/except.
+   Wrap the write in try/except. In swebench 4.x the call site is
+   ``ModalSandboxRuntime.__init__`` → ``self.write_file(...)`` →
+   ``self.sandbox.open(path, "w")``; in older swebench it was a free
+   ``set_cpu_quota`` function. We patch both: ``write_file`` swallows
+   FileNotFoundError for cgroup paths, and ``set_cpu_quota`` (if present)
+   is wrapped too.
 
 2. **Rescore `*_ids` fix**: older harness rescore code read
    ``resolved_instances`` / ``unresolved_instances`` / ``error_instances``
@@ -100,11 +105,126 @@ def _patch_modal_cgroup_v2() -> None:
     _m._hybrid_cgroup_patched = True  # type: ignore[attr-defined]
 
 
+_CGROUP_SOURCE_SENTINEL = "_OPENJARVIS_CGROUP_V2_PATCH_APPLIED"
+
+
+def _patch_modal_sandbox_source() -> None:
+    """Patch ``run_evaluation_modal.py`` on disk so subprocesses inherit it.
+
+    ``_run_harness`` shells out to ``python -m swebench.harness.run_evaluation``,
+    which means our in-process monkey-patches don't help. We do a one-time
+    idempotent textual rewrite of the swebench module file in the venv:
+
+    - Replace the bare ``self.write_file("/sys/fs/cgroup/cpu/cpu.shares", "2048")``
+      with a try/except FileNotFoundError. Marked with a sentinel so we
+      don't reapply on every call.
+
+    Only fires when the original unwrapped line is present and the sentinel
+    isn't — safe to run repeatedly. No-op if upstream ever fixes this.
+    """
+    try:
+        from swebench.harness.modal_eval import run_evaluation_modal as _m  # type: ignore[import-not-found]
+    except Exception:
+        return
+    src_path = getattr(_m, "__file__", None)
+    if not src_path:
+        return
+    try:
+        src = Path(src_path).read_text()
+    except Exception:
+        return
+    if _CGROUP_SOURCE_SENTINEL in src:
+        return
+    needle = '        self.write_file("/sys/fs/cgroup/cpu/cpu.shares", "2048")'
+    if needle not in src:
+        # Upstream changed the line — bail rather than apply blindly.
+        return
+    replacement = (
+        '        # ' + _CGROUP_SOURCE_SENTINEL + '\n'
+        '        try:\n'
+        '            self.write_file("/sys/fs/cgroup/cpu/cpu.shares", "2048")\n'
+        '        except FileNotFoundError:\n'
+        '            pass  # cgroup v2 Modal sandbox — path missing is fine\n'
+    )
+    new_src = src.replace(needle + "\n", replacement, 1)
+    try:
+        Path(src_path).write_text(new_src)
+    except Exception:
+        return
+
+
+def _patch_modal_sandbox_write_file() -> None:
+    """Make ``ModalSandboxRuntime.write_file`` survive cgroup-v2 sandboxes.
+
+    swebench 4.x removed ``set_cpu_quota`` and inlined the cgroup write in
+    ``ModalSandboxRuntime.__init__`` as
+    ``self.write_file("/sys/fs/cgroup/cpu/cpu.shares", "2048")``. Modal v1's
+    ``sandbox.open(path, "w")`` raises ``FileNotFoundError`` because the
+    sandbox image is cgroup-v2 and the parent dir doesn't exist, which kills
+    the whole constructor before any patch can be applied. We wrap
+    ``write_file`` to swallow that specific failure for cgroup paths, while
+    still letting real write failures (patch/eval script) surface.
+    """
+    try:
+        from swebench.harness.modal_eval import run_evaluation_modal as _m  # type: ignore[import-not-found]
+    except Exception:
+        return
+    runtime = getattr(_m, "ModalSandboxRuntime", None)
+    if runtime is None:
+        return
+    if getattr(runtime, "_hybrid_write_file_patched", False):
+        return
+    orig_write = runtime.write_file
+
+    def patched_write_file(self, file_path: str, content: str):  # type: ignore[no-untyped-def]
+        try:
+            return orig_write(self, file_path, content)
+        except FileNotFoundError:
+            # cgroup-v1 paths don't exist in Modal v2 sandboxes — skip
+            # silently for those, re-raise for everything else.
+            if isinstance(file_path, str) and file_path.startswith("/sys/fs/cgroup/"):
+                return None
+            raise
+
+    runtime.write_file = patched_write_file  # type: ignore[assignment]
+    runtime._hybrid_write_file_patched = True  # type: ignore[attr-defined]
+
+
+def _sentinel_present_on_disk() -> bool:
+    """Return True iff the cgroup-v2 sentinel is in the installed swebench file.
+
+    Used to detect that a ``uv sync`` / pip reinstall has reverted the textual
+    patch out from under us while the process is still running. The in-process
+    monkey-patches survive that (they live on the imported module object), but
+    the subprocess fork in :func:`_run_harness` reads the file fresh and would
+    silently regress to the broken version.
+    """
+    try:
+        from swebench.harness.modal_eval import run_evaluation_modal as _m  # type: ignore[import-not-found]
+    except Exception:
+        return False
+    src_path = getattr(_m, "__file__", None)
+    if not src_path:
+        return False
+    try:
+        return _CGROUP_SOURCE_SENTINEL in Path(src_path).read_text()
+    except Exception:
+        return False
+
+
 def _apply_patches_once() -> None:
+    """Apply all swebench patches; idempotent and resilient to disk reverts.
+
+    The in-process flag short-circuits the common case, but if the on-disk
+    sentinel is missing we force a re-apply (covers ``uv sync`` / pip
+    reinstall clobbering the textual rewrite while the process is alive).
+    """
     global _PATCHES_APPLIED
-    if _PATCHES_APPLIED:
+    if _PATCHES_APPLIED and _sentinel_present_on_disk():
         return
     _patch_modal_cgroup_v2()
+    _patch_modal_sandbox_write_file()
+    _patch_modal_sandbox_source()
     _PATCHES_APPLIED = True
 
 
