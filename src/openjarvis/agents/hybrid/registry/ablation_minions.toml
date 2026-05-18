@@ -1,0 +1,72 @@
+# Winner-confirm cells for the n=100 ablation.
+# Re-run the per-axis cloud winner on minions to check the ranking
+# isn't a skillorchestra-only artifact. Same subset, same n.
+#
+# Local is fixed at Qwen-3.5-27B-FP8 (Andrew's lane).
+# NOTE: minions × Gemini × GAIA isn't included — the vendored Minions
+# library lacks a Gemini client. Gemini SWE still works because the
+# minions SWE path delegates to `run_swe_agent_loop` for the local
+# worker and uses _call_cloud for the supervisor.
+
+[cells.minions-qwen27b-opus47-gaia-n100]
+method = "minions"
+bench  = "gaia"
+n      = 100
+subset = "gaia_n100_seed42.json"
+local  = { model = "Qwen/Qwen3.5-27B-FP8", endpoint = "http://localhost:8001/v1" }
+cloud  = { model = "claude-opus-4-7", endpoint = "anthropic" }
+method_cfg = { mode = "minion", max_rounds = 3, worker_max_tokens = 4096 }
+
+[cells.minions-qwen27b-opus47-swe-n100]
+method = "minions"
+bench  = "swebench-verified"
+n      = 100
+subset = "swebench_verified_n100_seed42.json"
+local  = { model = "Qwen/Qwen3.5-27B-FP8", endpoint = "http://localhost:8001/v1" }
+cloud  = { model = "claude-opus-4-7", endpoint = "anthropic" }
+method_cfg = { mode = "minion", supervisor_max_tokens = 1024, swe_max_turns = 50, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096, swe_use_agent_loop = true }
+
+[cells.minions-qwen27b-gpt5-gaia-n100]
+method = "minions"
+bench  = "gaia"
+n      = 100
+subset = "gaia_n100_seed42.json"
+local  = { model = "Qwen/Qwen3.5-27B-FP8", endpoint = "http://localhost:8001/v1" }
+cloud  = { model = "gpt-5", endpoint = "openai" }
+method_cfg = { mode = "minion", max_rounds = 3, worker_max_tokens = 4096 }
+
+[cells.minions-qwen27b-gpt5-swe-n100]
+method = "minions"
+bench  = "swebench-verified"
+n      = 100
+subset = "swebench_verified_n100_seed42.json"
+local  = { model = "Qwen/Qwen3.5-27B-FP8", endpoint = "http://localhost:8001/v1" }
+cloud  = { model = "gpt-5", endpoint = "openai" }
+method_cfg = { mode = "minion", supervisor_max_tokens = 1024, swe_max_turns = 50, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096, swe_use_agent_loop = true }
+
+[cells.minions-qwen27b-gpt5mini-gaia-n100]
+method = "minions"
+bench  = "gaia"
+n      = 100
+subset = "gaia_n100_seed42.json"
+local  = { model = "Qwen/Qwen3.5-27B-FP8", endpoint = "http://localhost:8001/v1" }
+cloud  = { model = "gpt-5-mini", endpoint = "openai" }
+method_cfg = { mode = "minion", max_rounds = 3, worker_max_tokens = 4096 }
+
+[cells.minions-qwen27b-gpt5mini-swe-n100]
+method = "minions"
+bench  = "swebench-verified"
+n      = 100
+subset = "swebench_verified_n100_seed42.json"
+local  = { model = "Qwen/Qwen3.5-27B-FP8", endpoint = "http://localhost:8001/v1" }
+cloud  = { model = "gpt-5-mini", endpoint = "openai" }
+method_cfg = { mode = "minion", supervisor_max_tokens = 1024, swe_max_turns = 50, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096, swe_use_agent_loop = true }
+
+[cells.minions-qwen27b-gemini25flash-swe-n100]
+method = "minions"
+bench  = "swebench-verified"
+n      = 100
+subset = "swebench_verified_n100_seed42.json"
+local  = { model = "Qwen/Qwen3.5-27B-FP8", endpoint = "http://localhost:8001/v1" }
+cloud  = { model = "gemini-2.5-flash", endpoint = "gemini" }
+method_cfg = { mode = "minion", supervisor_max_tokens = 1024, swe_max_turns = 50, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096, swe_use_agent_loop = true }
