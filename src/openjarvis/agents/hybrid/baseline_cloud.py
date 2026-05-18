@@ -32,6 +32,7 @@ from openjarvis.agents.hybrid._base import (
     web_search_cfg,
 )
 from openjarvis.agents.hybrid._prices import cost as estimate_cost
+from openjarvis.agents.hybrid._prices import default_max_output_tokens
 from openjarvis.agents.hybrid.mini_swe_agent import run_swe_agent_loop
 from openjarvis.core.registry import AgentRegistry
 
@@ -42,8 +43,12 @@ class BaselineCloudAgent(LocalCloudAgent):
 
     Configurable knobs via ``cfg``:
 
-    - ``cloud_max_tokens`` (int, default 4096): max_tokens per GAIA call
-      and per turn of the SWE agent loop.
+    - ``cloud_max_tokens`` (int, default 4096 / 16384 for reasoning models):
+      max_tokens per GAIA call and per turn of the SWE agent loop. Default
+      jumps to 16384 for GPT-5 family and Gemini 2.5 Pro because those models
+      burn the budget on hidden chain-of-thought before emitting visible
+      answer text; at 4096 they silently truncated 18–26% of GAIA cells with
+      empty answers. Override per-cell via ``method_cfg`` to opt out.
     - ``swe_max_turns`` (int, default 30): SWE-bench loop turn cap.
     - ``swe_bash_timeout_s`` (int, default 120): SWE-bench bash timeout.
     """
@@ -77,7 +82,7 @@ class BaselineCloudAgent(LocalCloudAgent):
                 max_turns=int(cfg.get("swe_max_turns", 30)),
                 bash_timeout=int(cfg.get("swe_bash_timeout_s", 120)),
                 output_cap=int(cfg.get("swe_output_cap", 10_000)),
-                turn_max_tokens=int(cfg.get("cloud_max_tokens", 4096)),
+                turn_max_tokens=int(cfg.get("cloud_max_tokens", default_max_output_tokens(self._cloud_model))),
                 trace_prefix="baseline_cloud",
             )
             meta = {
@@ -105,7 +110,7 @@ class BaselineCloudAgent(LocalCloudAgent):
             text, p_tok, c_tok, n_searches, turns = self._call_anthropic_agent(
                 self._cloud_model,
                 user=input,
-                max_tokens=int(cfg.get("cloud_max_tokens", 4096)),
+                max_tokens=int(cfg.get("cloud_max_tokens", default_max_output_tokens(self._cloud_model))),
                 temperature=0.0,
                 tools=[build_web_search_tool(ws_max_uses)],
                 max_turns=gaia_max_turns,
@@ -146,7 +151,7 @@ class BaselineCloudAgent(LocalCloudAgent):
         # mini-SWE-agent loop above (now supports anthropic/openai/gemini).
         text, p_tok, c_tok = self._call_cloud(
             user=input,
-            max_tokens=int(cfg.get("cloud_max_tokens", 4096)),
+            max_tokens=int(cfg.get("cloud_max_tokens", default_max_output_tokens(self._cloud_model))),
             temperature=0.0,
         )
         meta = {
