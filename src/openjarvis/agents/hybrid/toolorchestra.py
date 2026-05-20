@@ -186,11 +186,13 @@ RL_ALL_TOOLS: Dict[str, Dict[str, List[str]]] = {
 
 def _expert_for(slot: str, local_model: Optional[str],
                 local_endpoint: Optional[str],
-                cloud_model: str) -> Dict[str, Any]:
+                cloud_model: str,
+                cloud_endpoint: str = "anthropic") -> Dict[str, Any]:
     """Map an upstream model slot (`answer-1`, `search-3`, …) to a worker spec.
 
     Routing policy:
-      - `*-1` (frontier tier)  -> cloud (`cloud_model`)
+      - `*-1` (frontier tier)  -> cloud (`cloud_model`), wtype keyed off
+                                  `cloud_endpoint` ("anthropic"/"openai"/"gemini")
       - `*-2` (mid tier)       -> cloud `gpt-5-mini` (matches the paper's
                                   cost tier for mid OpenAI calls)
       - `*-3` (local tier)     -> local vLLM (`local_model`)
@@ -205,9 +207,12 @@ def _expert_for(slot: str, local_model: Optional[str],
             "model": _DEFAULT_WEB_SEARCH_MODEL,
         }
     if slot.endswith("-1") or slot.endswith("-math-1"):
+        ep = (cloud_endpoint or "anthropic").lower()
+        if ep not in ("anthropic", "openai", "gemini"):
+            ep = "anthropic"
         return {
             "name": f"frontier:{slot}",
-            "type": "anthropic",
+            "type": ep,
             "model": cloud_model,
         }
     if slot.endswith("-2") or slot.endswith("-math-2"):
@@ -231,6 +236,280 @@ def _expert_for(slot: str, local_model: Optional[str],
         "type": "openai",
         "model": "gpt-5-mini",
     }
+
+
+# ============================================================================
+# Paper-match expert mapping (2026-05-19).
+# ============================================================================
+# Maps the orchestrator's `model` slot to a paper-match worker spec. Differs
+# from `_expert_for` in that it pulls in OpenRouter-hosted code/math/generalist
+# models and routes `search` through Tavily, while `enhance_reasoning` is
+# expected to produce code that the caller pipes through a Modal sandbox
+# (handled at dispatch time, not here).
+#
+# Slot map (paper-faithful where we can; substitutions noted in toolorchestra
+# paper-match docs `docs/26.5.19/toolorchestra-papermatch.md`):
+#
+#   reasoner-1 -> GPT-5 (frontier reasoner)
+#   reasoner-2 -> GPT-5-mini (mid)
+#   reasoner-3 -> local Qwen (Orchestrator-8B endpoint also serves this)
+#   answer-1   -> GPT-5
+#   answer-2   -> GPT-5-mini
+#   answer-3   -> Llama-3.3-70B (OpenRouter, generalist tier-3 per spec)
+#   answer-4   -> local Qwen
+#   answer-math-1 -> Qwen-2.5-Coder-32B via OpenRouter
+#                    (paper uses Qwen-2.5-Math-72B; not on OpenRouter — see doc)
+#   answer-math-2 -> Qwen-2.5-Coder-32B via OpenRouter
+#                    (paper uses Qwen-2.5-Math-7B; not on OpenRouter — see doc)
+#   search-*   -> Tavily search (paper)
+#
+# `enhance_reasoning` is dispatched through the coder specialist regardless of
+# slot tier — the orchestrator emits one of `reasoner-{1,2,3}` and the caller
+# routes the same way in all three cases, then optionally extracts a python
+# code block and execs it in Modal. (We keep the slot-aware routing inside the
+# `reasoner-*` map above for parity, but the `enhance_reasoning` tool itself
+# pins the coder regardless. See `_run_rl_paper` dispatch.)
+
+_PAPER_CODER_OPENROUTER = "qwen/qwen-2.5-coder-32b-instruct"
+_PAPER_GENERALIST_TIER3_OPENROUTER = "meta-llama/llama-3.3-70b-instruct"
+
+
+def _paper_expert_for(
+    slot: str,
+    local_model: Optional[str],
+    local_endpoint: Optional[str],
+    cloud_model: str,
+    cloud_endpoint: str = "openai",
+) -> Dict[str, Any]:
+    """Paper-match counterpart of ``_expert_for``.
+
+    Differs from ``_expert_for``:
+      - Search slots go to ``tavily-search`` (not Anthropic web_search).
+      - Tier-3 generalist answer (``answer-3``) routes to Llama-3.3-70B via
+        OpenRouter rather than collapsing onto the local vLLM.
+      - Math slots route to the OpenRouter code specialist (Qwen-2.5-Coder-32B)
+        as a substitute for the unavailable Qwen-2.5-Math-{72B,7B}.
+      - ``reasoner-1`` / ``answer-1`` route to GPT-5 by default (paper).
+    """
+    if slot.startswith("search"):
+        return {
+            "name": f"tavily:{slot}",
+            "type": "tavily-search",
+            "model": "tavily",
+        }
+    if slot in ("answer-math-1", "answer-math-2"):
+        return {
+            "name": f"math-coder:{slot}",
+            "type": "openrouter",
+            "model": _PAPER_CODER_OPENROUTER,
+        }
+    if slot == "answer-3":
+        return {
+            "name": f"generalist-llama:{slot}",
+            "type": "openrouter",
+            "model": _PAPER_GENERALIST_TIER3_OPENROUTER,
+        }
+    if slot.endswith("-1"):
+        # Tier-1 frontier reasoner / answer — paper uses GPT-5.
+        return {
+            "name": f"frontier:{slot}",
+            "type": "openai",
+            "model": "gpt-5",
+        }
+    if slot.endswith("-2"):
+        return {
+            "name": f"mid:{slot}",
+            "type": "openai",
+            "model": "gpt-5-mini",
+        }
+    # `*-3` / `*-4` collapse onto the local vLLM (the orchestrator endpoint
+    # also serves the local Qwen for the rare local-tier slot).
+    if local_model and local_endpoint:
+        return {
+            "name": f"local:{slot}",
+            "type": "vllm",
+            "model": local_model,
+            "base_url": local_endpoint,
+        }
+    return {
+        "name": f"mid-fallback:{slot}",
+        "type": "openai",
+        "model": "gpt-5-mini",
+    }
+
+
+# ---- Tavily + Modal helpers -------------------------------------------------
+
+def _call_tavily_search(query: str, max_results: int = 5) -> Tuple[str, int, int]:
+    """One-shot Tavily search. Returns (text, p_tok=0, c_tok=0).
+
+    Token counts are reported as zero (no LLM was billed); the OpenJarvis
+    accounting layer separately tallies tool-call counts. Falls back to
+    DuckDuckGo if Tavily is unreachable (see ``WebSearchTool``).
+    """
+    from openjarvis.tools.web_search import WebSearchTool
+
+    tool = WebSearchTool(max_results=max_results)
+    res = tool.execute(query=query, max_results=max_results)
+    text = res.content or ""
+    if not res.success and not text:
+        text = "(no results)"
+    return text, 0, 0
+
+
+_MODAL_APP_NAME = "openjarvis-toolorchestra-sandbox"
+
+
+def _call_modal_python(code: str, timeout_s: int = 60) -> Tuple[str, int]:
+    """Execute a single Python snippet in a fresh Modal Sandbox.
+
+    Returns ``(combined_stdout_stderr, returncode)``. Logs are capped at 8 KiB.
+    Any exception (modal auth, network, sandbox boot failure) is captured into
+    the returned string with a non-zero rc — we never raise back to the
+    orchestrator loop. The sandbox is torn down at the end via ``terminate()``.
+    """
+    try:
+        import modal
+
+        app = modal.App.lookup(_MODAL_APP_NAME, create_if_missing=True)
+        # python:3.12-slim is small + boots fast; the paper uses a generic
+        # Python image too. We rely on stdlib only — no extra pip installs.
+        image = modal.Image.debian_slim(python_version="3.12")
+        sb = modal.Sandbox.create(
+            "python", "-c", code,
+            app=app,
+            image=image,
+            timeout=int(timeout_s),
+        )
+        sb.wait()
+        try:
+            out = sb.stdout.read() or ""
+        except Exception:
+            out = ""
+        try:
+            err = sb.stderr.read() or ""
+        except Exception:
+            err = ""
+        rc = sb.returncode if sb.returncode is not None else -1
+        try:
+            sb.terminate()
+        except Exception:
+            pass
+        combined = out + (("\n" + err) if err else "")
+        if len(combined) > 8192:
+            combined = combined[:8192] + "\n... (output truncated)"
+        return combined, int(rc)
+    except Exception as exc:
+        return f"[modal-python error: {type(exc).__name__}: {exc}]", -1
+
+
+_PY_CODE_RE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
+
+
+def _extract_first_python_block(text: str) -> Optional[str]:
+    """Return the first ```python ... ``` block (or ```...```), or None."""
+    m = _PY_CODE_RE.search(text or "")
+    return m.group(1).strip() if m else None
+
+
+def _call_orchestrator_with_tool_calls(
+    model: str,
+    endpoint: str,
+    *,
+    user: str,
+    system: str,
+    max_tokens: int,
+    temperature: float,
+    tools: List[Dict[str, Any]],
+    timeout: float = 600.0,
+) -> Tuple[str, int, int, Any]:
+    """Orchestrator-aware vLLM call. Returns (text, p_tok, c_tok, tool_calls).
+
+    Mirrors ``LocalCloudAgent._call_vllm`` but ALSO surfaces the SDK-level
+    ``tool_calls`` object so the RL-mode parser can match against it
+    directly. Otherwise vLLM's tool parser silently swallows the tool call
+    into the SDK field while leaving ``content == ''`` — and the text-tag
+    parser sees nothing, falling through to the answer-1 fallback. (Bug
+    observed 2026-05-19 on the paper-match smoke; same path was buggy on
+    the default pool too, just less reproducibly.)
+    """
+    from openai import OpenAI
+
+    client = OpenAI(base_url=endpoint, api_key="EMPTY", timeout=timeout)
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    resp = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        tools=tools,
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    choice = resp.choices[0]
+    message = choice.message
+    text = message.content or ""
+    tool_calls = getattr(message, "tool_calls", None)
+    u = resp.usage
+    p = getattr(u, "prompt_tokens", 0) if u else 0
+    c = getattr(u, "completion_tokens", 0) if u else 0
+    return text, p, c, tool_calls
+
+
+def _paper_pool(
+    local_model: Optional[str],
+    local_endpoint: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Paper-match worker pool (registered for traces / inspection).
+
+    NOTE: in RL mode the orchestrator dispatches via tool/slot rather than
+    worker_id, so this list is purely informational — `_paper_expert_for`
+    is the actual routing function. We still return a list here so the
+    paradigm's trace metadata has something concrete to log.
+    """
+    pool: List[Dict[str, Any]] = []
+    if local_model and local_endpoint:
+        pool.append({
+            "id": len(pool),
+            "name": "local-qwen",
+            "type": "vllm",
+            "model": local_model,
+            "base_url": local_endpoint,
+            "description": "Local Qwen vLLM (paper uses Qwen3-32B).",
+        })
+    pool.append({
+        "id": len(pool), "name": "tavily-search",
+        "type": "tavily-search", "model": "tavily",
+        "description": "Tavily web search.",
+    })
+    pool.append({
+        "id": len(pool), "name": "modal-python",
+        "type": "modal-python", "model": "modal-python",
+        "description": "Modal Sandbox for one-shot Python exec.",
+    })
+    pool.append({
+        "id": len(pool), "name": "code-specialist",
+        "type": "openrouter", "model": _PAPER_CODER_OPENROUTER,
+        "description": "Qwen-2.5-Coder-32B via OpenRouter (paper).",
+    })
+    pool.append({
+        "id": len(pool), "name": "generalist-llama",
+        "type": "openrouter", "model": _PAPER_GENERALIST_TIER3_OPENROUTER,
+        "description": "Llama-3.3-70B-Instruct via OpenRouter (paper tier-3).",
+    })
+    pool.append({
+        "id": len(pool), "name": "generalist-gpt5",
+        "type": "openai", "model": "gpt-5",
+        "description": "GPT-5 frontier generalist.",
+    })
+    pool.append({
+        "id": len(pool), "name": "generalist-gpt5-mini",
+        "type": "openai", "model": "gpt-5-mini",
+        "description": "GPT-5-mini mid generalist.",
+    })
+    return pool
 
 
 # Regex for ``<tool_call>{...}</tool_call>`` blocks emitted by Orchestrator-8B
@@ -367,7 +646,21 @@ def _extract_final_answer_text(text: str) -> str:
 
 # ---------- Worker pool ----------
 
-def _default_pool(local_model: Optional[str], local_endpoint: Optional[str]) -> List[Dict[str, Any]]:
+def _default_pool(
+    local_model: Optional[str],
+    local_endpoint: Optional[str],
+    cloud_model: str = "claude-opus-4-7",
+    cloud_endpoint: str = "anthropic",
+) -> List[Dict[str, Any]]:
+    """Default heterogeneous worker pool.
+
+    The frontier worker's ``type`` + ``model`` track the cell's resolved
+    ``(cloud_model, cloud_endpoint)`` pair so non-Anthropic cells (gpt-5,
+    gemini-2.5-pro, …) route their frontier slot to the right SDK.
+    """
+    ep = (cloud_endpoint or "anthropic").lower()
+    if ep not in ("anthropic", "openai", "gemini"):
+        ep = "anthropic"
     pool: List[Dict[str, Any]] = []
     if local_model and local_endpoint:
         pool.append({
@@ -393,9 +686,9 @@ def _default_pool(local_model: Optional[str], local_endpoint: Optional[str]) -> 
     })
     pool.append({
         "id": len(pool),
-        "name": "frontier-anthropic",
-        "type": "anthropic",
-        "model": "claude-opus-4-7",
+        "name": f"frontier-{ep}",
+        "type": ep,
+        "model": cloud_model,
         "description": (
             "Frontier reasoning model. Use for hard multi-step reasoning, "
             "code review, or a final synthesis pass. Expensive — use sparingly."
@@ -415,7 +708,18 @@ def _default_pool(local_model: Optional[str], local_endpoint: Optional[str]) -> 
 
 
 # Worker types toolorchestra's `_call_worker` actually dispatches.
-_TOOLORCH_VALID_TYPES = ("vllm", "openai", "anthropic", "anthropic-web-search")
+#
+# Paper-match additions (2026-05-19) — opt in via `method_cfg.pool = "paper"`:
+#   `tavily-search`  — Tavily API search (the paper's web tool).
+#   `openrouter`     — OpenAI-compatible client at openrouter.ai/api/v1.
+#                      Used for the code/math specialists and Llama-3.3-70B /
+#                      Qwen3-32B generalists.
+#   `modal-python`   — One-shot Python exec in a fresh Modal Sandbox (the
+#                      paper's "Python sandbox" inside `enhance_reasoning`).
+_TOOLORCH_VALID_TYPES = (
+    "vllm", "openai", "anthropic", "anthropic-web-search", "gemini",
+    "tavily-search", "openrouter", "modal-python",
+)
 
 # Default model used when an `anthropic-web-search` entry omits `model`.
 _DEFAULT_WEB_SEARCH_MODEL = "claude-haiku-4-5"
@@ -426,6 +730,7 @@ def _resolve_worker_pool(
     local_model: Optional[str],
     local_endpoint: Optional[str],
     cloud_model: str,
+    cloud_endpoint: str = "anthropic",
 ) -> List[Dict[str, Any]]:
     """Return the worker pool for this run.
 
@@ -448,7 +753,7 @@ def _resolve_worker_pool(
     """
     override = cfg.get("worker_pool")
     if override is None:
-        return _default_pool(local_model, local_endpoint)
+        return _default_pool(local_model, local_endpoint, cloud_model, cloud_endpoint)
     if not isinstance(override, list) or not override:
         raise ValueError(
             "Invalid worker_pool entry [-]: worker_pool must be a non-empty list"
@@ -570,6 +875,14 @@ def _call_worker(
             temperature=eff_temp,
         )
         return text, p, c, False, 0.0, 0
+    if wtype == "gemini":
+        text, p, c = LocalCloudAgent._call_gemini(
+            worker["model"],
+            user=prompt,
+            max_tokens=max_tok,
+            temperature=temp,
+        )
+        return text, p, c, False, 0.0, 0
     if wtype == "anthropic":
         eff_temp = temp if supports_temperature(worker["model"]) else 0.0
         text, p, c, _ = LocalCloudAgent._call_anthropic(
@@ -591,6 +904,28 @@ def _call_worker(
         )
         extra = n_searches * WEB_SEARCH_COST_PER_CALL
         return text, p, c, False, extra, n_searches
+    if wtype == "tavily-search":
+        # Tavily costs are flat per call; charge `WEB_SEARCH_COST_PER_CALL`
+        # for parity with the Anthropic web-search worker. One call = one
+        # "n_search" for accounting.
+        max_results = int(cfg.get("tavily_max_results", 5))
+        text, p, c = _call_tavily_search(str(prompt), max_results=max_results)
+        return text, p, c, False, WEB_SEARCH_COST_PER_CALL, 1
+    if wtype == "openrouter":
+        text, p, c = LocalCloudAgent._call_openrouter(
+            worker["model"],
+            user=prompt,
+            max_tokens=max_tok,
+            temperature=temp,
+        )
+        return text, p, c, False, 0.0, 0
+    if wtype == "modal-python":
+        # `prompt` is the python code string to exec.
+        timeout_s = int(cfg.get("modal_python_timeout_s", 60))
+        out, _rc = _call_modal_python(str(prompt), timeout_s=timeout_s)
+        # No LLM tokens consumed; report 0 in/out. Cost is whatever Modal
+        # charges per sandbox-second — not tracked here.
+        return out, 0, 0, False, 0.0, 0
     raise ValueError(f"unsupported worker type: {wtype!r}")
 
 
@@ -617,18 +952,20 @@ def _swe_call_worker(
     if wtype == "vllm":
         backbone = "local"
         endpoint = worker.get("base_url")
-    elif wtype == "anthropic":
+        loop_cloud_endpoint = "anthropic"  # unused when backbone=local
+    elif wtype in ("anthropic", "openai", "gemini"):
         backbone = "cloud"
         endpoint = None
+        loop_cloud_endpoint = wtype
     else:
-        # OpenAI workers fall back to one-shot.
+        # Unknown type — one-shot fallback.
         text, p, c, is_local, extra, n_searches = _call_worker(worker, prompt, cfg)
         return text, p, c, is_local, extra, n_searches, 0
     out = run_swe_agent_loop(
         task,
         backbone=backbone,
         backbone_model=worker["model"],
-        cloud_endpoint="anthropic",
+        cloud_endpoint=loop_cloud_endpoint,
         local_endpoint=endpoint,
         initial_prompt=prompt,
         max_turns=int(cfg.get("swe_max_turns", 30)),
@@ -668,6 +1005,7 @@ class ToolOrchestraAgent(LocalCloudAgent):
                 self._local_model,
                 self._local_endpoint,
                 self._cloud_model,
+                self._cloud_endpoint,
             )
         # Validate `orchestrator_mode` (typo-checked here, not on first task).
         mode = str(self._cfg.get("orchestrator_mode", "prompted")).lower()
@@ -712,6 +1050,7 @@ class ToolOrchestraAgent(LocalCloudAgent):
                 self._local_model,
                 self._local_endpoint,
                 self._cloud_model,
+                self._cloud_endpoint,
             )
         if not workers:
             raise RuntimeError("toolorchestra: empty worker pool")
@@ -942,6 +1281,12 @@ class ToolOrchestraAgent(LocalCloudAgent):
         orch_max_tokens = int(cfg.get("orchestrator_max_tokens", 4096))
         orch_temp = float(cfg.get("orchestrator_temperature", 1.0))
 
+        # Paper-match pool toggle (2026-05-19). When set, `_paper_expert_for`
+        # replaces `_expert_for` and `enhance_reasoning` is post-processed
+        # through a Modal Python sandbox. See module docstring + paper-match
+        # doc at `docs/26.5.19/toolorchestra-papermatch.md`.
+        paper_mode = str(cfg.get("pool", "")).lower() == "paper"
+
         # SWE-bench detection: same gate as the prompted path. Requires
         # `method_cfg.swe_use_agent_loop = true` AND the task carries the
         # SWE-bench fields. When active, the `enhance_reasoning` and
@@ -999,27 +1344,60 @@ class ToolOrchestraAgent(LocalCloudAgent):
                 )
 
                 # Orchestrator-8B served on local vLLM. We pass the three NVlabs
-                # tools verbatim. ``trace_role="orchestrator"`` keeps these
-                # rows distinguishable from worker calls in the trace log.
-                text, o_in, o_out = LocalCloudAgent._call_vllm(
-                    orch_model,
-                    orch_endpoint,
-                    user=user,
-                    system=RL_ORCHESTRATOR_SYS,
-                    max_tokens=orch_max_tokens,
-                    temperature=orch_temp,
-                    enable_thinking=False,
-                    tools=RL_TOOLS_SPEC,
-                    trace_role="orchestrator",
-                )
+                # tools verbatim. In paper-mode we use the local helper so we
+                # get the SDK-level ``tool_calls`` object back — `_call_vllm`
+                # returns just text and loses the call when vLLM's parser
+                # caught it (silently falls through to answer-1 fallback).
+                # Default mode keeps the legacy call for byte-identical output
+                # on existing cells.
+                if paper_mode:
+                    text, o_in, o_out, sdk_tool_calls = _call_orchestrator_with_tool_calls(
+                        orch_model,
+                        orch_endpoint,
+                        user=user,
+                        system=RL_ORCHESTRATOR_SYS,
+                        max_tokens=orch_max_tokens,
+                        temperature=orch_temp,
+                        tools=RL_TOOLS_SPEC,
+                    )
+                    self.record_trace_event({
+                        "kind": "vllm",
+                        "role": "orchestrator",
+                        "model": orch_model,
+                        "endpoint": orch_endpoint,
+                        "system": RL_ORCHESTRATOR_SYS,
+                        "user": user,
+                        "response": text,
+                        "tool_calls": [
+                            {
+                                "id": getattr(tc, "id", None),
+                                "type": getattr(tc, "type", None),
+                                "function": {
+                                    "name": getattr(getattr(tc, "function", None), "name", None),
+                                    "arguments": getattr(getattr(tc, "function", None), "arguments", None),
+                                },
+                            }
+                            for tc in (sdk_tool_calls or [])
+                        ],
+                        "tokens_in": o_in,
+                        "tokens_out": o_out,
+                    })
+                else:
+                    text, o_in, o_out = LocalCloudAgent._call_vllm(
+                        orch_model,
+                        orch_endpoint,
+                        user=user,
+                        system=RL_ORCHESTRATOR_SYS,
+                        max_tokens=orch_max_tokens,
+                        temperature=orch_temp,
+                        enable_thinking=False,
+                        tools=RL_TOOLS_SPEC,
+                        trace_role="orchestrator",
+                    )
+                    sdk_tool_calls = None
                 tokens_local += o_in + o_out
 
-                # The trace event recorded by ``_call_vllm`` already contains
-                # any SDK-level tool_calls. Re-parse from text for the tag-style
-                # fallback (qwen3_xml parser misses hermes-style tags).
-                # We don't have direct access to the SDK tool_calls object here —
-                # parse from text only. (`_call_vllm` returns just (text, p, c).)
-                action = _parse_rl_tool_call(text, None)
+                action = _parse_rl_tool_call(text, sdk_tool_calls)
                 history.append({
                     "role": "orchestrator", "turn": turn, "raw": text, "action": action,
                 })
@@ -1055,27 +1433,69 @@ class ToolOrchestraAgent(LocalCloudAgent):
                     )
                     continue
 
-                worker = _expert_for(
-                    slot, self._local_model, self._local_endpoint, self._cloud_model
-                )
+                # Paper-match (`method_cfg.pool == "paper"`) routes through
+                # the Tavily/OpenRouter/Modal pool instead of the default
+                # Anthropic-web-search-driven mapping. For `search` this
+                # also forces the worker prompt to a raw query string
+                # (Tavily takes a single search string, not a chat-style
+                # framing).
+                if paper_mode:
+                    worker = _paper_expert_for(
+                        slot, self._local_model, self._local_endpoint,
+                        self._cloud_model, self._cloud_endpoint,
+                    )
+                    # In paper mode, `enhance_reasoning` is always the coder
+                    # specialist regardless of the orchestrator's chosen tier.
+                    # The coder is then expected to emit a python block which
+                    # we exec in Modal (below).
+                    if name == "enhance_reasoning":
+                        worker = {
+                            "name": f"coder:{slot}",
+                            "type": "openrouter",
+                            "model": _PAPER_CODER_OPENROUTER,
+                        }
+                else:
+                    worker = _expert_for(
+                        slot, self._local_model, self._local_endpoint, self._cloud_model,
+                        self._cloud_endpoint,
+                    )
 
                 # Dispatch — the orchestrator only conveys a tool/model
                 # choice, NOT a question rewrite; the prompt we send the
                 # expert is the same context the orchestrator saw, framed
                 # appropriately for the tool.
                 if name == "search":
-                    w_input = (
-                        f"Search the web to gather information that helps answer:\n"
-                        f"{question}\n\nCurrent context:\n{context_str or '(empty)'}"
-                    )
+                    if paper_mode:
+                        # Tavily takes a query string. Orchestrator-8B often
+                        # emits an extra `query` arg (not in the upstream
+                        # schema but useful) — prefer it; else fall back to
+                        # the raw question.
+                        q = args.get("query")
+                        w_input = q if isinstance(q, str) and q.strip() else question
+                    else:
+                        w_input = (
+                            f"Search the web to gather information that helps answer:\n"
+                            f"{question}\n\nCurrent context:\n{context_str or '(empty)'}"
+                        )
                 elif name == "enhance_reasoning":
-                    w_input = (
-                        f"Problem: {question}\n\nContext:\n{context_str or '(empty)'}\n\n"
-                        "Reason carefully. Outline the key intermediate steps and any "
-                        "computations or facts you can derive. Do NOT give a final "
-                        "answer — the orchestrator will collect your reasoning and "
-                        "call the answer tool next."
-                    )
+                    if paper_mode:
+                        w_input = (
+                            f"Problem: {question}\n\nContext:\n{context_str or '(empty)'}\n\n"
+                            "Write a short Python script that computes intermediate "
+                            "results which help answer the problem. Output ONLY the "
+                            "code inside one ```python ... ``` fenced block. Print "
+                            "any results you derive using `print(...)`. The script "
+                            "must run with the Python stdlib only — no extra pip "
+                            "installs."
+                        )
+                    else:
+                        w_input = (
+                            f"Problem: {question}\n\nContext:\n{context_str or '(empty)'}\n\n"
+                            "Reason carefully. Outline the key intermediate steps and any "
+                            "computations or facts you can derive. Do NOT give a final "
+                            "answer — the orchestrator will collect your reasoning and "
+                            "call the answer tool next."
+                        )
                 else:  # name == "answer"
                     w_input = (
                         f"Problem: {question}\n\nContext:\n{context_str or '(empty)'}\n\n"
@@ -1111,6 +1531,26 @@ class ToolOrchestraAgent(LocalCloudAgent):
                 # original "at least one expert call" accounting.
                 tool_calls += bash_turns if bash_turns > 0 else max(1, n_searches)
 
+                # Paper-match: pipe coder output through a Modal sandbox so
+                # `enhance_reasoning` actually executes the code the coder
+                # wrote. Append the exec output to the worker's text. No-op
+                # when no python block is found.
+                modal_exec_output: Optional[str] = None
+                modal_exec_rc: Optional[int] = None
+                if (paper_mode and name == "enhance_reasoning"
+                        and not swe_mode):
+                    code = _extract_first_python_block(w_text)
+                    if code:
+                        timeout_s = int(cfg.get("modal_python_timeout_s", 60))
+                        modal_exec_output, modal_exec_rc = _call_modal_python(
+                            code, timeout_s=timeout_s,
+                        )
+                        tool_calls += 1
+                        w_text = (
+                            f"{w_text}\n\n[modal-python stdout/stderr "
+                            f"(rc={modal_exec_rc})]\n{modal_exec_output}"
+                        )
+
                 history.append({
                     "role": "worker",
                     "turn": turn,
@@ -1123,6 +1563,7 @@ class ToolOrchestraAgent(LocalCloudAgent):
                     "tokens_out": w_out,
                     "n_web_searches": n_searches,
                     "bash_turns": bash_turns,
+                    "modal_exec_rc": modal_exec_rc,
                 })
 
                 # Update accumulated context for the next turn.
@@ -1145,9 +1586,10 @@ class ToolOrchestraAgent(LocalCloudAgent):
                 # Hard fallback: ask the frontier worker directly. In SWE
                 # mode route this final call through the agent loop too so
                 # it can still touch the workdir and emit a diff.
-                worker = _expert_for(
+                expert_fn = _paper_expert_for if paper_mode else _expert_for
+                worker = expert_fn(
                     "answer-1", self._local_model, self._local_endpoint,
-                    self._cloud_model,
+                    self._cloud_model, self._cloud_endpoint,
                 )
                 fb_bash_turns = 0
                 if swe_mode and shared_workdir is not None:
@@ -1204,6 +1646,7 @@ class ToolOrchestraAgent(LocalCloudAgent):
                     "orchestrator_model": orch_model,
                     "orchestrator_endpoint": orch_endpoint,
                     "mode": "rl",
+                    "pool": "paper" if paper_mode else "default",
                     "swe_mode": swe_mode,
                     "note": (
                         "RL-trained nvidia/Orchestrator-8B as orchestrator. "

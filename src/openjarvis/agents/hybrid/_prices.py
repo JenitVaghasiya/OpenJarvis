@@ -25,6 +25,11 @@ PRICES: dict[str, tuple[float, float]] = {
     "gemini-2.5-pro":              (1.25, 10.0),
     "gemini-2.5-flash":            (0.30, 2.50),
     "gemini-2.5-flash-lite":       (0.10, 0.40),
+    # OpenRouter slugs (used by toolorchestra paper-match pool).
+    # Prices are OpenRouter list (USD/1M tokens), 2026-05 snapshot.
+    "qwen/qwen-2.5-coder-32b-instruct":  (0.08, 0.18),
+    "qwen/qwen3-32b":                    (0.10, 0.30),
+    "meta-llama/llama-3.3-70b-instruct": (0.13, 0.39),
 }
 
 # Models whose API rejects an explicit `temperature` param — callers should

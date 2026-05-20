@@ -79,6 +79,24 @@ cloud  = { model = "claude-opus-4-7", endpoint = "anthropic" }
 method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 8192, worker_temperature = 0.2, swe_use_agent_loop = true, swe_max_turns = 30, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096 }
 concurrency = 3
 
+# ============================================================
+# Paper-match pool smoke (2026-05-19). n=5 GAIA. Opts into the
+# closer-to-paper worker pool via `method_cfg.pool = "paper"`:
+#   - search       -> Tavily API (TAVILY_API_KEY in OpenJarvis/.env)
+#   - enhance_..   -> Qwen2.5-Coder-32B (OpenRouter) + Modal Python sandbox
+#   - answer-1     -> GPT-5             answer-math-* -> Qwen2.5-Coder-32B
+#   - answer-2     -> GPT-5-mini        answer-3     -> Llama-3.3-70B (OR)
+#   - answer-4     -> local Qwen (the Orchestrator-8B endpoint at :8003)
+# Skipped vs. paper: FAISS RAG, Qwen2.5-Math-{72B,7B} (not on OpenRouter).
+[cells.toolorchestra-papermatch-orch8b-opus47-gaia-n5]
+method = "toolorchestra"
+bench  = "gaia"
+n      = 5
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "claude-opus-4-7", endpoint = "anthropic" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 4096, worker_temperature = 0.2, pool = "paper", modal_python_timeout_s = 60, tavily_max_results = 5 }
+concurrency = 1
+
 # Smoke cell for the RL-mode SWE wiring (2026-05-19). n=2, no subset so it
 # just grabs the first two SWE-bench Verified tasks. Used to verify
 # end-to-end: workdir clone, _swe_call_worker dispatch through Orchestrator-8B,
@@ -91,3 +109,121 @@ local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
 cloud  = { model = "claude-opus-4-7", endpoint = "anthropic" }
 method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 6, orchestrator_max_tokens = 4096, worker_max_tokens = 8192, worker_temperature = 0.2, swe_use_agent_loop = true, swe_max_turns = 15, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096 }
 concurrency = 1
+
+# ============================================================
+# ToolOrchestra × cloud-worker ablation (n=100, 2026-05-19)
+# Cloud-axis sweep: Haiku 4.5, GPT-5, GPT-5 mini, Gemini 2.5 Pro,
+# Gemini 2.5 Flash. Mirrors the skillorchestra cloud-axis cells.
+# All share Orchestrator-8B on :8003 as the local orchestrator.
+# concurrency=3 for Anthropic/Google, 2 for OpenAI (prepaid-quota wall).
+# ============================================================
+
+# ---------- Anthropic Haiku 4.5 ----------
+
+[cells.toolorchestra-orch8b-haiku45-gaia-n100]
+method = "toolorchestra"
+bench  = "gaia"
+n      = 100
+subset = "gaia_n100_seed42.json"
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "claude-haiku-4-5", endpoint = "anthropic" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 4096, worker_temperature = 0.2 }
+concurrency = 3
+
+[cells.toolorchestra-orch8b-haiku45-swe-n100]
+method = "toolorchestra"
+bench  = "swebench-verified"
+n      = 100
+subset = "swebench_verified_n100_seed42.json"
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "claude-haiku-4-5", endpoint = "anthropic" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 8192, worker_temperature = 0.2, swe_use_agent_loop = true, swe_max_turns = 30, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096 }
+concurrency = 3
+
+# ---------- OpenAI GPT-5 ----------
+
+[cells.toolorchestra-orch8b-gpt5-gaia-n100]
+method = "toolorchestra"
+bench  = "gaia"
+n      = 100
+subset = "gaia_n100_seed42.json"
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "gpt-5", endpoint = "openai" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 4096, worker_temperature = 0.2 }
+concurrency = 2
+
+[cells.toolorchestra-orch8b-gpt5-swe-n100]
+method = "toolorchestra"
+bench  = "swebench-verified"
+n      = 100
+subset = "swebench_verified_n100_seed42.json"
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "gpt-5", endpoint = "openai" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 8192, worker_temperature = 0.2, swe_use_agent_loop = true, swe_max_turns = 30, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096 }
+concurrency = 2
+
+# ---------- OpenAI GPT-5 mini ----------
+
+[cells.toolorchestra-orch8b-gpt5mini-gaia-n100]
+method = "toolorchestra"
+bench  = "gaia"
+n      = 100
+subset = "gaia_n100_seed42.json"
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "gpt-5-mini", endpoint = "openai" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 4096, worker_temperature = 0.2 }
+concurrency = 2
+
+[cells.toolorchestra-orch8b-gpt5mini-swe-n100]
+method = "toolorchestra"
+bench  = "swebench-verified"
+n      = 100
+subset = "swebench_verified_n100_seed42.json"
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "gpt-5-mini", endpoint = "openai" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 8192, worker_temperature = 0.2, swe_use_agent_loop = true, swe_max_turns = 30, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096 }
+concurrency = 2
+
+# ---------- Google Gemini 2.5 Pro ----------
+
+[cells.toolorchestra-orch8b-gemini25pro-gaia-n100]
+method = "toolorchestra"
+bench  = "gaia"
+n      = 100
+subset = "gaia_n100_seed42.json"
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "gemini-2.5-pro", endpoint = "gemini" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 4096, worker_temperature = 0.2 }
+concurrency = 3
+
+[cells.toolorchestra-orch8b-gemini25pro-swe-n100]
+method = "toolorchestra"
+bench  = "swebench-verified"
+n      = 100
+subset = "swebench_verified_n100_seed42.json"
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "gemini-2.5-pro", endpoint = "gemini" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 8192, worker_temperature = 0.2, swe_use_agent_loop = true, swe_max_turns = 30, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096 }
+concurrency = 3
+
+# ---------- Google Gemini 2.5 Flash ----------
+
+[cells.toolorchestra-orch8b-gemini25flash-gaia-n100]
+method = "toolorchestra"
+bench  = "gaia"
+n      = 100
+subset = "gaia_n100_seed42.json"
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "gemini-2.5-flash", endpoint = "gemini" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 4096, worker_temperature = 0.2 }
+concurrency = 3
+
+[cells.toolorchestra-orch8b-gemini25flash-swe-n100]
+method = "toolorchestra"
+bench  = "swebench-verified"
+n      = 100
+subset = "swebench_verified_n100_seed42.json"
+local  = { model = "orchestrator-8b", endpoint = "http://localhost:8003/v1" }
+cloud  = { model = "gemini-2.5-flash", endpoint = "gemini" }
+method_cfg = { orchestrator_mode = "rl", orchestrator_endpoint = "http://localhost:8003/v1", orchestrator_model = "orchestrator-8b", max_turns = 8, orchestrator_max_tokens = 4096, worker_max_tokens = 8192, worker_temperature = 0.2, swe_use_agent_loop = true, swe_max_turns = 30, swe_bash_timeout_s = 120, swe_turn_max_tokens = 4096 }
+concurrency = 3
