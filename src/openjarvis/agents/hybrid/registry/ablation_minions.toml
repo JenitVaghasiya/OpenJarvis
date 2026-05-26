@@ -2,7 +2,7 @@
 # Re-run the per-axis cloud winner on minions to check the ranking
 # isn't a skillorchestra-only artifact. Same subset, same n.
 #
-# Local is fixed at Qwen-3.5-27B-FP8 (Andrew's lane).
+# Local is fixed at Qwen-3.5-27B-FP8 (matches the n=100 sweep local lane).
 # NOTE: minions × Gemini is fully supported as of 2026-05-19 — the
 # vendored Minions library ships a GeminiClient that minion.py already
 # special-cases (Pydantic response_schema for the supervisor JSON

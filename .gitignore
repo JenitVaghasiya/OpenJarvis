@@ -125,3 +125,8 @@ learning.db
 **/learning/benchmarks/
 **/teacher_traces/
 *.session.json
+
+# Local dev artifacts (hybrid worker logs + cli debug dumps)
+minion_logs/
+*.oj-debug.json
+oj-debug.*.json

@@ -9,8 +9,6 @@ Drives a batch of ``openjarvis.agents.hybrid.runner`` invocations with:
   * exit-code + summary.json driven retry loop (resume mode, runner-handled)
   * incremental atomic updates of ``results-table.md`` (auto-section only)
   * Ctrl-C → SIGTERM the whole process group of each child cleanly
-
-Spec: see /matx/u/aspark/CLAUDE.md and the task description.
 """
 
 from __future__ import annotations
@@ -33,12 +31,17 @@ from typing import Dict, List, Optional, Tuple
 # Paths
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path("/matx/u/aspark/OpenJarvis")
-VENV_PY = REPO_ROOT / ".venv" / "bin" / "python"
-EXPERIMENTS_DIR = Path("/matx/u/aspark/.openjarvis/experiments/hybrid")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+VENV_PY = Path(os.environ.get("OPENJARVIS_VENV_PY", REPO_ROOT / ".venv" / "bin" / "python"))
+EXPERIMENTS_DIR = Path(
+    os.environ.get(
+        "OPENJARVIS_HYBRID_EXPERIMENTS_DIR",
+        Path.home() / ".openjarvis" / "experiments" / "hybrid",
+    )
+)
 RUNS_DIR = EXPERIMENTS_DIR / "runs"
 RESULTS_TABLE = EXPERIMENTS_DIR / "docs" / "results-table.md"
-LOG_DIR = Path("/tmp/hybrid-sweep-logs")
+LOG_DIR = Path(os.environ.get("HYBRID_SWEEP_LOG_DIR", "/tmp/hybrid-sweep-logs"))
 AUTO_SECTION_HEADER = "## n=100 sweep — auto-generated"
 
 # ---------------------------------------------------------------------------

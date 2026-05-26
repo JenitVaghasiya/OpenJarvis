@@ -1,10 +1,10 @@
 # Hybrid local+cloud paradigm agents
 
-Six paradigms ported from the legacy hybrid-local-cloud-compute harness
-([github.com/andrewparkk1/hybrid-local-cloud-compute](https://github.com/andrewparkk1/hybrid-local-cloud-compute);
-results archived at `~/.openjarvis/experiments/hybrid/`) — each is
-registered as a standard OpenJarvis agent so the rest of the platform
-(SDK, CLI, distillation, evals) can use them like any other agent.
+Six paradigms ported from the original ``hybrid-local-cloud-compute``
+harness — each is registered as a standard OpenJarvis agent so the rest
+of the platform (SDK, CLI, distillation, evals) can use them like any
+other agent. Results live under ``$OPENJARVIS_HYBRID_EXPERIMENTS_DIR``
+(defaults to ``~/.openjarvis/experiments/hybrid/``).
 
 | Agent             | Plan shape      | Trains what?         | Workers                   |
 |-------------------|-----------------|----------------------|---------------------------|
@@ -46,15 +46,15 @@ structural scorer).
 ## Quickstart
 
 ```bash
-cd /matx/u/aspark/OpenJarvis
+cd OpenJarvis
 source .env                                           # API keys
 
-# 1. Start vLLM in another shell (see CLAUDE.md for the full recipe)
+# 1. Start vLLM in another shell (see your local launch recipe)
 #    CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m vllm.entrypoints.openai.api_server \
 #       --model Qwen/Qwen3.5-27B-FP8 --port 8001 ...
 
 # 2. (Optional) for Minions: install the upstream library
-.venv/bin/uv pip install -e /matx/u/aspark/external/minions
+.venv/bin/uv pip install -e path/to/minions
 
 # 3. Run a smoke cell
 .venv/bin/python -m openjarvis.agents.hybrid.runner \

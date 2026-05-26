@@ -26,9 +26,9 @@ How the hybrid harness wires it (and what we mirror here):
 - ``ranker_model`` / ``fuser_model`` (default: ``cloud_model`` for both)
 - ``max_tokens`` (default 2048), ``temperature`` (default 0.7)
 
-Requires the Archon library (cloned at
-``hybrid-local-cloud-compute/external/Archon`` — add its ``src`` to
-``PYTHONPATH`` or pip-install editable). Import is lazy.
+Requires the Archon library from https://github.com/Stanford-ILIAD/Archon
+— either pip-install editable or set ``ARCHON_SRC`` to the checkout's
+``src/`` directory. Import is lazy.
 
 Ported from ``hybrid-local-cloud-compute/adapters/archon_adapter.py``.
 """
@@ -87,13 +87,11 @@ def _stub_archon_imports() -> None:
 
 
 def _add_archon_to_path() -> None:
-    """Locate Archon's ``src`` dir. The hybrid clone is the default location;
-    override with ``ARCHON_SRC`` env var if Archon is installed elsewhere."""
-    archon_src = os.environ.get(
-        "ARCHON_SRC",
-        "/matx/u/aspark/hybrid-local-cloud-compute/external/Archon/src",
-    )
-    if archon_src not in sys.path and os.path.isdir(archon_src):
+    """Locate Archon's ``src`` dir. Set ``ARCHON_SRC`` to point at your
+    Archon checkout (``<repo>/src``); otherwise we assume ``archon`` is on
+    ``sys.path`` already (e.g. ``pip install`` from a local clone)."""
+    archon_src = os.environ.get("ARCHON_SRC")
+    if archon_src and os.path.isdir(archon_src) and archon_src not in sys.path:
         sys.path.insert(0, archon_src)
 
 

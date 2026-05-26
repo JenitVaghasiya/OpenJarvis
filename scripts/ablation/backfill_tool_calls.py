@@ -53,7 +53,13 @@ from typing import Any, Dict, List, Optional, Tuple
 HYBRID_RUNS = Path(
     os.environ.get(
         "HYBRID_RUNS_DIR",
-        "/matx/u/aspark/.openjarvis/experiments/hybrid/runs",
+        Path(
+            os.environ.get(
+                "OPENJARVIS_HYBRID_EXPERIMENTS_DIR",
+                Path.home() / ".openjarvis" / "experiments" / "hybrid",
+            )
+        )
+        / "runs",
     )
 )
 

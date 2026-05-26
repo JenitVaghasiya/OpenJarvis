@@ -17,9 +17,9 @@ acc / $0.67 (vs $1.09).
 
 Requires the ``minions`` library from
 https://github.com/HazyResearch/minions installed in the same env (e.g.
-``uv pip install -e /matx/u/aspark/hybrid-local-cloud-compute/external/minions``).
-Import is lazy — the agent class registers without ``minions`` available,
-and the import error only fires on ``run()``.
+``uv pip install -e path/to/minions``). Import is lazy — the agent class
+registers without ``minions`` available, and the import error only fires
+on ``run()``.
 
 Compatibility patches applied at first ``run()`` (idempotent):
 

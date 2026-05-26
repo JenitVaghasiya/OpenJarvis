@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Build /matx/u/aspark/.openjarvis/experiments/hybrid/docs/index.html
-plus a set of PNG pareto plots in the same dir. The HTML embeds the PNGs
-via <img src="..."> so the browser never has to render anything itself —
+"""Build ``$OPENJARVIS_HYBRID_EXPERIMENTS_DIR/docs/index.html`` plus a set
+of PNG pareto plots in the same dir. The HTML embeds the PNGs via
+``<img src="...">`` so the browser never has to render anything itself —
 just shows static images.
 
 Re-running is idempotent: regenerates index.html + all PNGs from whatever
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html as html_lib
 import json
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,7 +23,12 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-HYBRID_ROOT = Path("/matx/u/aspark/.openjarvis/experiments/hybrid")
+HYBRID_ROOT = Path(
+    os.environ.get(
+        "OPENJARVIS_HYBRID_EXPERIMENTS_DIR",
+        Path.home() / ".openjarvis" / "experiments" / "hybrid",
+    )
+)
 RUNS_DIR = HYBRID_ROOT / "runs"
 DOCS_DIR = HYBRID_ROOT / "docs"
 OUT_HTML = DOCS_DIR / "index.html"

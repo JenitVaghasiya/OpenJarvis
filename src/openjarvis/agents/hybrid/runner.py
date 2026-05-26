@@ -45,7 +45,7 @@ DEFAULT_REGISTRY_DIR = PACKAGE_DIR / "registry"
 DEFAULT_EXPERIMENTS_DIR = Path(
     os.environ.get(
         "OPENJARVIS_HYBRID_EXPERIMENTS_DIR",
-        "/matx/u/aspark/.openjarvis/experiments/hybrid",
+        Path.home() / ".openjarvis" / "experiments" / "hybrid",
     )
 )
 DEFAULT_SUBSETS_DIR = DEFAULT_EXPERIMENTS_DIR / "subsets"

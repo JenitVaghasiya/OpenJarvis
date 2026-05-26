@@ -14,14 +14,17 @@ warm on the mkt cluster.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-from openjarvis.agents.hybrid.runner import _load_swebench_tasks
+from openjarvis.agents.hybrid.runner import DEFAULT_SUBSETS_DIR, _load_swebench_tasks
 
 
 SUBSET_PATH = Path(
-    "/matx/u/aspark/.openjarvis/experiments/hybrid/subsets/"
-    "swebench_verified_n100_seed42.json"
+    os.environ.get(
+        "HYBRID_SWEBENCH_N100_SUBSET",
+        DEFAULT_SUBSETS_DIR / "swebench_verified_n100_seed42.json",
+    )
 )
 KNOWN_FULL_TASK_ID = "pytest-dev__pytest-10081"
 
