@@ -308,6 +308,23 @@ export function InputArea() {
               energy_j: ev.energy_j,
               duration_s: ev.duration_s,
             });
+          } else if (ev.type === 'error') {
+            // Backend setup/worker failure (Ollama down, planner model
+            // missing, KnowledgeStore locked, etc.). Without surfacing the
+            // message, the user sees only the generic "No response was
+            // generated" fallback and has no way to self-diagnose.
+            const msg = ev.message || 'Research failed (no detail provided)';
+            accumulatedContent = accumulatedContent
+              ? `${accumulatedContent}\n\n**Research stopped:** ${msg}`
+              : `**Research failed:** ${msg}`;
+            setStreamState({ content: accumulatedContent, phase: '' });
+            useAppStore.getState().addLogEntry({
+              timestamp: Date.now(),
+              level: 'error',
+              category: 'chat',
+              message: `Deep Research error: ${msg}`,
+            });
+            toast.error(msg, { duration: 8000 });
           } else if (ev.type === 'done') {
             if (ev.usage) {
               usage = {
