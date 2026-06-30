@@ -22,7 +22,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # numpy imported lazily inside _vector_recall (see embeddings.py) so importing
@@ -225,26 +225,43 @@ def _as_utc(ts: Optional[datetime]) -> Optional[datetime]:
     return ts.astimezone(timezone.utc)
 
 
-def _parse_timestamp_as_utc(raw: Any) -> Optional[datetime]:
+def _parse_timestamp_for_timeline(
+    raw: Any,
+) -> Tuple[Optional[datetime], Optional[date]]:
     if raw is None:
-        return None
+        return None, None
     text = str(raw).strip()
     if not text:
-        return None
+        return None, None
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        return None
-    return _as_utc(parsed)
+        return None, None
+    is_naive_midnight = (
+        parsed.tzinfo is None
+        and parsed.hour == 0
+        and parsed.minute == 0
+        and parsed.second == 0
+        and parsed.microsecond == 0
+    )
+    return _as_utc(parsed), parsed.date() if is_naive_midnight else None
 
 
 def _timestamp_in_range(
     timestamp: Optional[datetime],
     time_range: Optional[Tuple[Optional[datetime], Optional[datetime]]],
+    *,
+    all_day_date: Optional[date] = None,
 ) -> bool:
     if timestamp is None or time_range is None:
         return timestamp is not None
     start, end = time_range
+    if all_day_date is not None:
+        if start is not None and all_day_date < start.date():
+            return False
+        if end is not None and all_day_date > end.date():
+            return False
+        return True
     start_utc = _as_utc(start)
     end_utc = _as_utc(end)
     if start_utc is not None and timestamp < start_utc:
@@ -582,8 +599,12 @@ class HybridSearch:
 
         candidates: List[Tuple[str, datetime, float]] = []
         for row in rows:
-            timestamp = _parse_timestamp_as_utc(row["timestamp"])
-            if not _timestamp_in_range(timestamp, time_range):
+            timestamp, all_day_date = _parse_timestamp_for_timeline(row["timestamp"])
+            if not _timestamp_in_range(
+                timestamp,
+                time_range,
+                all_day_date=all_day_date,
+            ):
                 continue
             candidates.append(
                 (
@@ -615,13 +636,19 @@ class HybridSearch:
             ids,
         ).fetchall()
         timestamps = {
-            row["id"]: _parse_timestamp_as_utc(row["timestamp"])
+            row["id"]: _parse_timestamp_for_timeline(row["timestamp"])
             for row in rows
         }
-        return [
-            item for item in fused
-            if _timestamp_in_range(timestamps.get(item[0]), time_range)
-        ]
+
+        def _keeps_item(item: Tuple[str, float, float, float]) -> bool:
+            timestamp, all_day_date = timestamps.get(item[0], (None, None))
+            return _timestamp_in_range(
+                timestamp,
+                time_range,
+                all_day_date=all_day_date,
+            )
+
+        return [item for item in fused if _keeps_item(item)]
 
     # ------------------------------------------------------------------
     # Public entry point

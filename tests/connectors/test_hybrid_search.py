@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from openjarvis.connectors.hybrid_search import HybridSearch
 from openjarvis.connectors.store import KnowledgeStore
@@ -158,5 +158,24 @@ def test_upcoming_calendar_includes_today_all_day_events() -> None:
         time_range=(datetime(2999, 7, 1, 12, tzinfo=timezone.utc), None),
         limit=2,
     )
+    local_tz_hits = HybridSearch(store).search(
+        "",
+        sources=["gcalendar"],
+        time_range=(
+            datetime(
+                2999,
+                7,
+                1,
+                12,
+                tzinfo=timezone(timedelta(hours=-7)),
+            ),
+            None,
+        ),
+        limit=2,
+    )
 
     assert [hit.title for hit in hits] == ["All Day Today", "Morning Tomorrow"]
+    assert [hit.title for hit in local_tz_hits] == [
+        "All Day Today",
+        "Morning Tomorrow",
+    ]
