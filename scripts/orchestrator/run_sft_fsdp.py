@@ -6,7 +6,7 @@ fine-tune won't fit one L40S otherwise):
 
     accelerate launch --config_file <fsdp.yaml> \
         scripts/orchestrator/run_sft_fsdp.py \
-        --data data/runs/<...>/data.jsonl [--data <more> ...] \
+        --data data/orchestrator/sft/qwen_train_0707.jsonl [--data <more> ...] \
         --variant correct --model Qwen/Qwen3.5-9B \
         --out checkpoints/sft_correct --epochs 3 --batch-size 8 --grad-accum 8 \
         --wandb-project orchestrator-sft

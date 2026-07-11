@@ -111,9 +111,9 @@ def test_driver_runs_end_to_end_with_fakes(tmp_path, monkeypatch):
     # make_call_orchestrator builds an OpenAI client lazily, so it never connects
     # here (run_unified_rollout is stubbed out).
 
-    # The driver now treats --out as a LABEL and always writes to
-    # data/runs/<stamp>_<label>/data.jsonl (relative to cwd). chdir into tmp_path
-    # so the run folder is created under the test's temp dir, not the real repo.
+    # The driver treats --out as a TAG and always writes to
+    # data/orchestrator/raw/<label>_<MMDD>[_<tag>]/data.jsonl (relative to cwd).
+    # chdir into tmp_path so the run folder lands in the test's temp dir.
     monkeypatch.chdir(tmp_path)
     rc = drv.main([
         "--out", "v1",
@@ -121,7 +121,7 @@ def test_driver_runs_end_to_end_with_fakes(tmp_path, monkeypatch):
         "--max-tasks", "2",
     ])
     assert rc == 0
-    produced = list((tmp_path / "data" / "runs").glob("*_v1/data.jsonl"))
+    produced = list((tmp_path / "data" / "orchestrator" / "raw").glob("*_v1/data.jsonl"))
     assert len(produced) == 1
     lines = produced[0].read_text().strip().splitlines()
     assert len(lines) == 2

@@ -22,16 +22,16 @@ distinguishable in the UI.
 
 Usage (CLI):
   .venv/bin/python scripts/orchestrator/upload_to_braintrust.py \
-      data/sft_variants/qwen_orch_train_0707.jsonl=qwen_train_0707 \
-      data/sft_variants/qwen_orch_holdout_0707.jsonl=qwen_holdout_0707
+      data/orchestrator/sft/qwen_train_0707.jsonl=qwen_train_0707 \
+      data/orchestrator/sft/qwen_holdout_0707.jsonl=qwen_holdout_0707
 
   # name is optional; defaults to {model_short}_{split}_{date}
   .venv/bin/python scripts/orchestrator/upload_to_braintrust.py \
-      data/sft_variants/qwen_orch_holdout_0707.jsonl
+      data/orchestrator/sft/qwen_holdout_0707.jsonl
 
 Programmatic (used by the pipeline auto-upload hook in make_splits.py):
   from upload_to_braintrust import autoupload
-  autoupload(["data/sft_variants/qwen_orch_train_0707.jsonl=qwen_train_0707"],
+  autoupload(["data/orchestrator/sft/qwen_train_0707.jsonl=qwen_train_0707"],
              run_label="...")
 """
 import argparse

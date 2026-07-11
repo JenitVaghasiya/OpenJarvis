@@ -5,24 +5,27 @@ Replaces make_tranches.py + make_gemma_tranches.py, which carved 1k/2k/4k/8k
 data-scaling tranches from the June pool. That lineage is dead: the tranches it
 produced trained checkpoints that evaluated at base ~= 1k ~= 2k (the pool taught
 the orchestrator to re-derive answers itself instead of routing), and the pool
-was deleted. See data/DELETED_ERA1_MANIFEST.md.
+was deleted. The lesson is in data/orchestrator/README.md — it was a data-QUALITY
+ceiling, so re-running the old scaling ladder buys nothing.
 
-Naming is uniform: ``{name}_orch_{split}_{date}.jsonl`` with name in
-{qwen, gemma, pooled}. Pass several pools to merge-and-restratify into `pooled`.
+Reads a clean pool (reject-sampled from data/orchestrator/raw/) and writes the
+SFT splits to data/orchestrator/sft/. Naming is uniform — ``{name}_{split}_{date}``
+with name in {qwen, gemma, pooled}; pass several pools to merge-and-restratify
+into `pooled`.
 
 The holdout is domain-stratified so val-loss is leak-free, and `overfit100` is a
 strict prefix of train (it is a memorisation sanity check — the model must be
 able to fit 100 rows it *has* seen, else the format/masking is broken).
 Deterministic (seed 42).
 
-    # one pool -> qwen_orch_{train,holdout,overfit100}_0711.jsonl
+    # one pool -> qwen_{train,holdout,overfit100}_0711.jsonl
     python scripts/orchestrator/make_splits.py --name qwen \
-        --pool data/sft_variants/qwen_orch_clean_0711.jsonl
+        --pool data/orchestrator/sft/qwen_clean_0711.jsonl
 
-    # merge both -> pooled_orch_{train,holdout,overfit100}_0711.jsonl
+    # merge both -> pooled_{train,holdout,overfit100}_0711.jsonl
     python scripts/orchestrator/make_splits.py --name pooled \
-        --pool data/sft_variants/qwen_orch_clean_0711.jsonl \
-        --pool data/sft_variants/gemma_orch_clean_0711.jsonl
+        --pool data/orchestrator/sft/qwen_clean_0711.jsonl \
+        --pool data/orchestrator/sft/gemma_clean_0711.jsonl
 """
 import argparse
 import json
@@ -33,7 +36,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-OUT = Path("data/sft_variants")
+OUT = Path("data/orchestrator/sft")
 SEED = 42
 OVERFIT_N = 100
 # Orchestrator that generated each pool — stamped onto every row so provenance
@@ -93,7 +96,7 @@ def main() -> int:
     written = {}
     for split, data in (("train", train), ("holdout", holdout),
                         (f"overfit{OVERFIT_N}", overfit)):
-        f = args.out / f"{args.name}_orch_{split}_{args.date}.jsonl"
+        f = args.out / f"{args.name}_{split}_{args.date}.jsonl"
         f.write_text("".join(json.dumps(r) + "\n" for r in data))
         written[split] = f
         print(f"wrote {f} ({len(data)})")

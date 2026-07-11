@@ -24,7 +24,7 @@ call.
 
 Example (v1, base self-sampling):
     .venv/bin/python scripts/orchestrator/build_orchestrator_sft.py \
-        --out data/orchestrator_sft_v1.jsonl \
+        --orchestrator-label qwen \
         --orchestrator-endpoint http://localhost:8001/v1 \
         --orchestrator-model qwen3-8b \
         --samples-per-task 8 --max-keep-per-task 1
@@ -67,11 +67,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    # Default output is timestamped (e.g. data/orchestrator_sft_06-22-1230am.jsonl)
-    # so every run lands in its own file and concurrent runs never collide. Pass
-    # --out explicitly to override (sharded runs do this, one file per shard).
+    # --out is a TAG, not a path. The run dir is always
+    # data/orchestrator/raw/{label}_{MMDD}[_{tag}]/ and the file inside is always
+    # data.jsonl — see the run_dir block below. Use --out only to distinguish two
+    # runs of the same orchestrator on the same day (e.g. --out balanced50).
     p.add_argument("--out", default=None,
-                   help="Output JSONL. Default: data/orchestrator_sft_<MM-DD-HHMMam>.jsonl")
+                   help="Optional tag appended to the run dir name (not a path).")
     # The orchestrator == the local Qwen3-8B self-sampling over its own rollouts.
     p.add_argument("--orchestrator-endpoint", default="http://localhost:8001/v1",
                    help="OpenAI-compatible vLLM base URL serving the orchestrator.")
@@ -163,20 +164,32 @@ def main(argv: Optional[list[str]] = None) -> int:
                    "huggingface_hub", "openai"):
         logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-    # Every run lands in its OWN datetimed folder, all collected flat under
-    # data/runs/ — so runs sort by time, never collide, and never litter data/.
-    # --out is treated as an optional LABEL for the folder, not a path; the data
-    # file inside is always data.jsonl (+ .stats.json/.pretty.json/.txt/.html).
-    # Folder name: <MM-DD-HHMMam/pm>_<label> (local PT) e.g. 06-24-0349pm_gemma_20_anon
-    stamp = time.strftime("%m-%d-%I%M%p").lower()
-    label = Path(args.out).stem if args.out else "orchestrator_sft"
-    run_dir = (Path("data/runs") / f"{stamp}_{label}").resolve()
-    if run_dir.exists():  # parallel runs, same label+minute -> disambiguate
-        run_dir = run_dir.with_name(f"{run_dir.name}-{os.getpid()}")
+    # Every run lands in its OWN folder under data/orchestrator/raw/, named to
+    # MATCH the sft/ file it will eventually produce — only the stage word differs:
+    #
+    #   data/orchestrator/raw/qwen_0707/data.jsonl     <- every rollout, incl. failures
+    #   data/orchestrator/sft/qwen_clean_0707.jsonl    <- reject-sampled from it
+    #
+    # so any curated file traces back to its generation run by eye. raw/ sits ABOVE
+    # the sft/rl fork on purpose: SFT keeps only correct+clean rows, but GRPO needs
+    # the failures, and both read the same pool. Scheme is {name}_{MMDD}, name =
+    # --orchestrator-label (qwen/gemma/...). Same name twice in a day -> -2, -3
+    # suffix (creation order is preserved, and a MM-DD-HHMMpm stamp is redundant
+    # with mtime). --out is an optional extra tag, NOT a path; the data file inside
+    # is always data.jsonl.
+    prefix = args.orchestrator_label or "orch"
+    tag = f"_{Path(args.out).stem}" if args.out else ""
+    base = Path("data/orchestrator/raw") / f"{prefix}_{time.strftime('%m%d')}{tag}"
+    run_dir = base.resolve()
+    n = 1
+    while run_dir.exists():  # same name+day (incl. parallel shards) -> disambiguate
+        n += 1
+        run_dir = base.with_name(f"{base.name}-{n}").resolve()
+    label = run_dir.name
     out_p = run_dir / "data.jsonl"
     lock_p = out_p.with_suffix(out_p.suffix + ".lock")
     out_p.parent.mkdir(parents=True, exist_ok=True)
-    lock_p.write_text(f"{stamp} pid={os.getpid()}")
+    lock_p.write_text(f"{time.strftime('%m-%d-%I%M%p').lower()} pid={os.getpid()}")
     args.out = str(out_p)
     import atexit
     atexit.register(lambda: lock_p.exists() and lock_p.unlink())
