@@ -35,13 +35,16 @@ PRICES: dict[str, tuple[float, float]] = {
     "qwen/qwen3-32b": (0.10, 0.30),
     "meta-llama/llama-3.3-70b-instruct": (0.13, 0.39),
     # OpenRouter slugs for the orchestrator's local-OSS class when routed via
-    # OpenRouter instead of self-hosted vLLM. ESTIMATES — no public list price
-    # exists yet for these Qwen3.5/3.6 builds; scaled by active-param size.
-    # VERIFY against openrouter.ai before trusting the cost-aware reward numbers.
-    "qwen/qwen3.5-9b": (0.05, 0.10),
-    "qwen/qwen3.6-27b": (0.10, 0.30),
-    "qwen/qwen3.5-122b-a10b": (0.20, 0.60),
-    "qwen/qwen3.5-397b-a17b": (0.40, 1.20),
+    # OpenRouter instead of self-hosted vLLM. OpenRouter list price, checked
+    # 2026-07-11. These replace earlier active-param-scaled guesses that were
+    # 2-5x low on output; the cost-aware reward reads these directly, so the
+    # guesses were systematically undercharging the mid/large Qwen experts.
+    "qwen/qwen3.5-9b": (0.10, 0.15),
+    # qwen3.6-27b is not listed on OpenRouter; qwen3.5-27b is the nearest real
+    # quote and is what we charge for it.
+    "qwen/qwen3.6-27b": (0.195, 1.56),
+    "qwen/qwen3.5-122b-a10b": (0.26, 2.08),
+    "qwen/qwen3.5-397b-a17b": (0.385, 2.45),
 }
 
 # Models whose API rejects an explicit `temperature` param — callers should
