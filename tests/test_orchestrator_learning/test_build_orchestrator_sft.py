@@ -18,7 +18,8 @@ from openjarvis.learning.intelligence.orchestrator.sft_data.reject_sample import
 )
 
 
-def _fake_tasks() -> list[Task]:
+def _fake_tasks(**_kwargs) -> list[Task]:
+    # Accepts **kwargs so it can stand in for ``load_sft_tasks(cap=..., balanced=...)``.
     return [
         Task(task_id="t-math-1", question="What is 6 * 7?", answer="42", domain="math"),
         Task(task_id="t-code-1", question="Reverse 'ab'.", answer="ba", domain="code"),
@@ -31,7 +32,7 @@ def _canned_rollout(task: Task) -> UnifiedRollout:
         turns=[
             UnifiedTurn(reasoning="let me compute", tool_name="code_interpreter",
                         arguments={"code": "print(6*7)"}, observation="42"),
-            UnifiedTurn(reasoning="that's the result", tool_name=None),
+            UnifiedTurn(reasoning=f"The tool returned {task.answer}. FINAL_ANSWER: {task.answer}", tool_name=None),
         ],
         final_answer=task.answer, cost_usd=0.01, tokens=20, num_tool_calls=1,
     )
@@ -110,14 +111,19 @@ def test_driver_runs_end_to_end_with_fakes(tmp_path, monkeypatch):
     # make_call_orchestrator builds an OpenAI client lazily, so it never connects
     # here (run_unified_rollout is stubbed out).
 
-    out = tmp_path / "v1.jsonl"
+    # The driver now treats --out as a LABEL and always writes to
+    # data/runs/<stamp>_<label>/data.jsonl (relative to cwd). chdir into tmp_path
+    # so the run folder is created under the test's temp dir, not the real repo.
+    monkeypatch.chdir(tmp_path)
     rc = drv.main([
-        "--out", str(out),
+        "--out", "v1",
         "--samples-per-task", "1",
         "--max-tasks", "2",
     ])
     assert rc == 0
-    lines = out.read_text().strip().splitlines()
+    produced = list((tmp_path / "data" / "runs").glob("*_v1/data.jsonl"))
+    assert len(produced) == 1
+    lines = produced[0].read_text().strip().splitlines()
     assert len(lines) == 2
     rec = json.loads(lines[0])
     assert rec["conversations"][0]["role"] == "system"

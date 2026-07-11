@@ -445,8 +445,8 @@ class LocalCloudAgent(BaseAgent):
         tools: Optional[list] = None,
         tool_choice: Optional[dict] = None,
         output_config: Optional[dict] = None,
-        timeout: float = 600.0,
-        max_retries: int = 12,
+        timeout: float = 60.0,
+        max_retries: int = 2,
         trace_role: str = "cloud",
     ) -> Tuple[str, int, int, int]:
         """Single Anthropic call. Returns (text, p_tok, c_tok, n_web_searches).
@@ -536,7 +536,7 @@ class LocalCloudAgent(BaseAgent):
         response_format: Optional[dict] = None,
         tools: Optional[list] = None,
         tool_choice: Optional[Any] = None,
-        timeout: float = 600.0,
+        timeout: float = 60.0,
         trace_role: str = "cloud",
     ) -> Tuple[str, int, int]:
         """Single OpenAI call. Returns (text, p_tok, c_tok). Trace-captured;
@@ -604,7 +604,7 @@ class LocalCloudAgent(BaseAgent):
         system: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.0,
-        timeout: float = 600.0,
+        timeout: float = 60.0,
         trace_role: str = "cloud",
         extra_body: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, int, int]:

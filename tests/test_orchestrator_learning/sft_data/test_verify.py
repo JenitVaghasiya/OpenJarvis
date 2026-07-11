@@ -35,10 +35,14 @@ def test_math_numeric_float_match():
     assert verify_answer(_math("42"), "42.0") is True
 
 
-def test_math_symbolic_equivalence():
-    # x^2 + 2x + 1 == (x+1)^2 via sympy (skips gracefully if sympy absent).
+def test_math_symbolic_equivalence_no_longer_verified_locally():
+    # The sympy symbolic-equality block was removed from _math_equal: sympy.simplify
+    # / parse_latex could hang on pathological \boxed{} answers while holding the GIL
+    # and deadlock the threaded rejection sampler. The math domain now uses
+    # string+numeric+f1 only (no judge call either), so a purely SYMBOLIC
+    # equivalence that isn't string/numeric-equal is intentionally NOT recognized.
     t = _math("(x+1)^2")
-    assert verify_answer(t, "x^2 + 2*x + 1") is True
+    assert verify_answer(t, "x^2 + 2*x + 1") is False
 
 
 def test_empty_prediction_false():

@@ -38,7 +38,10 @@ class Task:
     task_id: str
     question: str
     answer: str
-    domain: str
+    domain: str            # coarse area: math / code / science / medical / chat / misc
+    difficulty: str = ""   # OpenThoughts difficulty tier (GeneralThought has none)
+    dataset: str = ""      # source dataset: GeneralThought / OpenThoughts3
+    subsector: str = ""    # fine source: NuminaMath / NHSQA / TACO / glaive / ...
 
     @property
     def instruction(self) -> str:
@@ -90,6 +93,9 @@ def _normalize_generalthought(row: Dict[str, Any], *, index: int = 0) -> Optiona
         question=question,
         answer=answer,
         domain=_generalthought_domain(row),
+        difficulty=str(row.get("difficulty") or "").strip(),  # usually absent for GT
+        dataset="GeneralThought",
+        subsector=str(row.get("question_source") or "").strip(),
     )
 
 
@@ -98,12 +104,15 @@ def load_generalthought(
     n: int = 2000,
     seed: int = 42,
     source: Optional[Iterable[Dict[str, Any]]] = None,
+    buffer: Optional[int] = None,
 ) -> Iterator[Task]:
     """Yield up to ``n`` GeneralThought tasks, randomly mixed across categories.
 
     ``source`` overrides the HF stream with an iterable of raw row dicts (tests).
     We over-stream a buffer and shuffle it so the yielded tasks are a random mix
-    of the source's categories rather than a single leading shard.
+    of the source's categories rather than a single leading shard. ``buffer``
+    overrides the shuffle-buffer size; pass a small value (e.g. for smoke runs)
+    to avoid streaming the default 6000-row floor.
     """
     if source is None:
         from datasets import load_dataset  # lazy: optional dep / network
@@ -113,7 +122,7 @@ def load_generalthought(
     rng = random.Random(seed)
     # Buffer a generous multiple of n so the shuffle actually mixes categories,
     # but stay bounded for the multi-hundred-K streams.
-    buf_cap = max(n * 6, 6000)
+    buf_cap = buffer if buffer is not None else max(n * 6, 6000)
     buf: List[Task] = []
     for i, row in enumerate(source):
         task = _normalize_generalthought(dict(row), index=i)
@@ -186,7 +195,29 @@ def _normalize_openthoughts(row: Dict[str, Any], *, index: int = 0) -> Optional[
         return None
     domain = str(row.get("domain") or "unknown").strip().lower() or "unknown"
     task_id = str(row.get("id") or row.get("source") or f"openthoughts-{index}") + f"-{index}"
-    return Task(task_id=task_id, question=question, answer=answer, domain=domain)
+    return Task(
+        task_id=task_id,
+        question=question,
+        answer=answer,
+        domain=domain,
+        difficulty=str(row.get("difficulty") or "").strip(),
+        dataset="OpenThoughts3",
+        subsector=str(row.get("source") or "").strip(),
+    )
+
+
+# The 1.2M set ships as 120 uniform parquet shards with no domain in the file
+# names, but the rows are front-ordered by domain. Probing one row per shard puts
+# code in shards ~0-30, math ~32-104, science ~105-119. Streaming the single
+# combined split therefore has to read the entire code (+ math) prefix before it
+# reaches math/science — minutes of wasted I/O. Instead we stream each domain from
+# shards *inside* its own region. A few shards (~10K rows each) cover any quota.
+_OT_SHARD_FMT = "data/train-{:05d}-of-00120.parquet"
+_OT_DOMAIN_SHARDS: Dict[str, List[int]] = {
+    "code": [0, 1, 2, 3],
+    "math": [45, 46, 47, 48],
+    "science": [112, 113, 114, 115, 116, 117, 118, 119],
+}
 
 
 def load_openthoughts(
@@ -199,26 +230,43 @@ def load_openthoughts(
 ) -> Iterator[Task]:
     """Yield OpenThoughts3 tasks balanced across code / math / science.
 
-    The HF stream is sharded by domain (all-code first), so we route rows into
-    per-domain buffers and stop once every quota is met. ``source`` overrides the
-    stream with raw row dicts (tests).
+    ``source`` overrides the stream with raw row dicts (tests): rows are routed
+    into per-domain buffers, stopping once every quota is met. With no override we
+    stream each domain from its own shard region (see ``_OT_DOMAIN_SHARDS``) so a
+    balanced pull never has to read the entire front-ordered code/math prefix.
     """
-    if source is None:
-        from datasets import load_dataset  # lazy: optional dep / network
-
-        source = load_dataset(OPENTHOUGHTS_ID, split="train", streaming=True)
-
     quotas = {"code": n_code, "math": n_math, "science": n_science}
     bufs: Dict[str, List[Task]] = {k: [] for k in quotas}
-    for i, row in enumerate(source):
-        task = _normalize_openthoughts(dict(row), index=i)
-        if task is None:
-            continue
-        dom = task.domain
-        if dom in bufs and len(bufs[dom]) < quotas[dom]:
-            bufs[dom].append(task)
-        if all(len(bufs[k]) >= quotas[k] for k in quotas):
-            break
+
+    if source is not None:
+        for i, row in enumerate(source):
+            task = _normalize_openthoughts(dict(row), index=i)
+            if task is None:
+                continue
+            dom = task.domain
+            if dom in bufs and len(bufs[dom]) < quotas[dom]:
+                bufs[dom].append(task)
+            if all(len(bufs[k]) >= quotas[k] for k in quotas):
+                break
+    else:
+        from datasets import load_dataset  # lazy: optional dep / network
+
+        idx = 0
+        for dom, quota in quotas.items():
+            if quota <= 0:
+                continue
+            files = [_OT_SHARD_FMT.format(s) for s in _OT_DOMAIN_SHARDS[dom]]
+            ds = load_dataset(
+                OPENTHOUGHTS_ID, data_files=files, split="train", streaming=True
+            )
+            for row in ds:
+                task = _normalize_openthoughts(dict(row), index=idx)
+                idx += 1
+                if task is None or task.domain != dom:
+                    continue
+                bufs[dom].append(task)
+                if len(bufs[dom]) >= quota:
+                    break
 
     rng = random.Random(seed)
     out: List[Task] = []
@@ -232,8 +280,33 @@ def load_openthoughts(
 # --- combined SFT / GRPO sets -------------------------------------------------
 
 
-def load_sft_tasks(*, seed: int = 42) -> List[Task]:
-    """The 8K cold-start SFT set: 2K GeneralThought + 2K code + 2K math + 2K science."""
+def load_sft_tasks(
+    *, seed: int = 42, cap: Optional[int] = None, balanced: bool = True
+) -> List[Task]:
+    """The 8K cold-start SFT set: 2K GeneralThought + 2K code + 2K math + 2K science.
+
+    ``cap`` (smoke runs): when set, draw ~``cap`` tasks total.
+      - default (``balanced=False``): GeneralThought only with a small stream
+        buffer — fastest, but the domain mix is whatever GeneralThought yields
+        (math/code/medical/chat), so a given sample can skew (e.g. all-medical).
+      - ``balanced=True``: ~cap/4 from each of GeneralThought + OpenThoughts
+        code/math/science, so the smoke is representative of the real run. Now
+        cheap because OpenThoughts streams from per-domain shards (no front-prefix).
+    """
+    if cap is not None and cap > 0:
+        if balanced:
+            per = max(cap // 4, 1)
+            tasks = list(load_generalthought(n=per, seed=seed, buffer=max(per * 6, 64)))
+            tasks.extend(
+                load_openthoughts(n_code=per, n_math=per, n_science=per, seed=seed)
+            )
+            rng = random.Random(seed)
+            rng.shuffle(tasks)
+            return tasks[:cap]
+        buf = max(cap * 4, 64)
+        tasks = list(load_generalthought(n=cap, seed=seed, buffer=buf))
+        random.Random(seed).shuffle(tasks)
+        return tasks[:cap]
     tasks: List[Task] = []
     tasks.extend(load_generalthought(n=2000, seed=seed))
     tasks.extend(load_openthoughts(n_code=2000, n_math=2000, n_science=2000, seed=seed))

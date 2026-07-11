@@ -13,6 +13,27 @@ _TOOL_CALL_TAG_RE = re.compile(
     r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL
 )
 
+# Fallback for a known failure mode: the SFT'd orchestrator often emits its
+# delegation as ``\boxed{expert_ab12: <sub-question>}`` (math-data habit bleeding
+# into routing) instead of a real ``<tool_call>`` JSON block. The name before the
+# colon is a valid (anonymized) tool label; the rest is the sub-question/args.
+#
+# Real outputs use several shapes, all handled here:
+#   \boxed{web_search: <query>}              -> name, args
+#   \boxed{web_search query: <query>}        -> the word "query" is dropped
+#   \boxed{file_read, path: <path>}          -> the ", <key>" hint sets the arg key
+# We require a ``name <optional , key | query> : <args>`` structure, so a genuine
+# answer like ``\boxed{10}``, ``\boxed{b,e}`` or ``\boxed{The answer is: 42}``
+# (first token isn't followed by a bare ``:`` / ``, key:`` / ``query:``) is left
+# alone. ``group("key")`` is the explicit arg key when the model wrote ``, key:``.
+_BOXED_DELEGATION_RE = re.compile(
+    r"\\boxed\{\s*([A-Za-z_][\w-]*)\s*"
+    r"(?:,\s*(?P<key>\w+)\s*)?"   # optional ", key" hint (e.g. file_read, path:)
+    r"(?:query\s*)?"             # optional literal "query" word before the colon
+    r":\s*(.+?)\s*\}\s*$",
+    re.DOTALL,
+)
+
 
 def _parse_rl_tool_call(content: str, sdk_tool_calls: Any) -> Optional[Dict[str, Any]]:
     """Return ``{"name": str, "arguments": dict}`` or None.
@@ -37,19 +58,23 @@ def _parse_rl_tool_call(content: str, sdk_tool_calls: Any) -> Optional[Dict[str,
     if not isinstance(content, str):
         return None
     m = _TOOL_CALL_TAG_RE.search(content)
-    if not m:
-        return None
-    try:
-        obj = json.loads(m.group(1))
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(obj, dict):
-        return None
-    name = obj.get("name")
-    args = obj.get("arguments", {})
-    if not isinstance(name, str) or not isinstance(args, dict):
-        return None
-    return {"name": name, "arguments": args}
+    if m:
+        try:
+            obj = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict):
+            name = obj.get("name")
+            args = obj.get("arguments", {})
+            if isinstance(name, str) and isinstance(args, dict):
+                return {"name": name, "arguments": args}
+    # \boxed{name[, key][ query]: <args>} fallback (see _BOXED_DELEGATION_RE).
+    bm = _BOXED_DELEGATION_RE.search(content.strip())
+    if bm:
+        arg_val = bm.groups()[-1].strip()
+        key = bm.group("key") or "input"
+        return {"name": bm.group(1), "arguments": {key: arg_val}}
+    return None
 
 
 def _build_pool_block(workers: List[Dict[str, Any]]) -> str:

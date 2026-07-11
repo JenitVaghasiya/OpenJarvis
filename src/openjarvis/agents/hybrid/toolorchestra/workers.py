@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -285,7 +286,7 @@ def _call_worker(
 ) -> Tuple[str, int, int, bool, float, int]:
     """Returns (text, p_tok, c_tok, is_local, extra_cost, n_web_searches)."""
     wtype = worker.get("type", "openai")
-    max_tok = int(cfg.get("worker_max_tokens", 4096))
+    max_tok = int(cfg.get("worker_max_tokens") or os.environ.get("OJ_WORKER_MAX_TOKENS", "4096"))
     temp = float(cfg.get("worker_temperature", 0.2))
 
     if wtype == "vllm":

@@ -29,6 +29,12 @@ from .datasets import Task
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GEMINI_MODEL = "gemini-2.5-flash"
+# LLM judge model. Switched from Gemini (free-tier rate limit stalled parallel gen)
+# to Anthropic Haiku: fast (~0.6s), direct PASS/FAIL, high rate limits.
+JUDGE_MODEL = "claude-haiku-4-5-20251001"
+# Reused across calls — creating a fresh Anthropic client per judge call leaks an
+# httpx connection pool (CLOSE-WAIT pileup under parallel generation). Thread-safe.
+_JUDGE_CLIENT = None
 
 
 # --- normalization (copied from hotpotqa.py — keep self-contained) -----------
@@ -136,29 +142,11 @@ def _math_equal(prediction: str, gold: str) -> bool:
         if abs(pf - gf) <= 1e-6 * max(1.0, abs(gf)):
             return True
 
-    # Symbolic / exact equality via sympy when available.
-    try:
-        import sympy
-        from sympy.parsing.latex import parse_latex  # noqa: F401  (optional)
-
-        def _parse(x: str):
-            try:
-                return sympy.sympify(x.replace("^", "**"))
-            except Exception:
-                try:
-                    return sympy.parsing.latex.parse_latex(x)
-                except Exception:
-                    return None
-
-        pe, ge = _parse(pred), _parse(g)
-        if pe is not None and ge is not None:
-            try:
-                if sympy.simplify(pe - ge) == 0:
-                    return True
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # NOTE: a sympy/parse_latex symbolic-equality block used to live here, but
+    # sympy.simplify / antlr parse_latex can hang on pathological \boxed{} answers
+    # while holding the GIL -> deadlocks the whole threaded rejection sampler
+    # (all worker threads freeze in futex_wait, server goes idle, 0 records).
+    # Symbolic equivalence is now deferred to the Gemini judge in verify_answer().
 
     # Last resort: whole-word substring of the gold in the prediction.
     return _string_or_f1(prediction, g, f1_threshold=0.9)
@@ -169,16 +157,24 @@ def _math_equal(prediction: str, gold: str) -> bool:
 
 def _gemini_judge(task: Task, prediction: str) -> Optional[bool]:
     """Ask Gemini PASS/FAIL. Returns None if unavailable (caller falls back)."""
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return None
     try:
-        from openai import OpenAI
+        import anthropic
     except Exception:
         return None
 
     try:
-        client = OpenAI(api_key=api_key, base_url=GEMINI_BASE_URL)
+        # Judge = Anthropic Haiku (fast ~0.6s, direct PASS/FAIL, high rate limits).
+        # Switched off the Gemini judge: its free-tier rate limit + SDK retry/backoff
+        # blocked worker threads for minutes under parallel generation and stalled
+        # the run. Fail-fast (no retries, short timeout): on error return None and the
+        # caller falls back to string/f1.
+        global _JUDGE_CLIENT
+        if _JUDGE_CLIENT is None:
+            _JUDGE_CLIENT = anthropic.Anthropic(api_key=api_key, max_retries=0, timeout=15)
+        client = _JUDGE_CLIENT
         prompt = (
             "You are grading a candidate answer against a gold reference.\n"
             "Reply with exactly one word: PASS if the candidate is correct and "
@@ -188,13 +184,12 @@ def _gemini_judge(task: Task, prediction: str) -> Optional[bool]:
             f"Candidate answer:\n{prediction}\n\n"
             "Verdict (PASS or FAIL):"
         )
-        resp = client.chat.completions.create(
-            model=GEMINI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
+        resp = client.messages.create(
+            model=JUDGE_MODEL,
             max_tokens=8,
+            messages=[{"role": "user", "content": prompt}],
         )
-        verdict = (resp.choices[0].message.content or "").strip().upper()
+        verdict = (resp.content[0].text or "").strip().upper()
         if "PASS" in verdict:
             return True
         if "FAIL" in verdict:
@@ -216,6 +211,10 @@ def verify_answer(task: Task, prediction: str) -> bool:
     domain = (task.domain or "").lower()
 
     if domain == "math":
+        # string + numeric + f1 only. sympy removed (GIL-deadlocked the threaded
+        # sampler); Gemini judge NOT used here either (32 tasks x N samples of math
+        # judge calls throttle Gemini and stall the whole run). Accept slightly lower
+        # math yield for a fast, hang-free verifier.
         return _math_equal(pred, task.answer)
 
     if domain == "code":

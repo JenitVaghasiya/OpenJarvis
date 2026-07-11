@@ -18,8 +18,27 @@ inside ``call_orchestrator`` at generate time (lazy import in ``unified.py``).
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Dict, Optional
+
+# The served fine-tuned model sometimes over-emits the answer marker, e.g.
+# "FINAL_ANSWER: FINAL_ANSWER: 42" — a doubled prefix that breaks answer
+# extraction and auto-scores the sample 0. Collapse any run of FINAL_ANSWER
+# markers to a single one, keeping the text after the LAST marker as the answer.
+_FA_MARK = re.compile(r"(?im)FINAL[_\s]?ANSWER\s*:?")
+
+
+def _clean_final_answer(text: str) -> str:
+    t = (text or "").strip()
+    marks = list(_FA_MARK.finditer(t))
+    if not marks:
+        return t
+    answer = t[marks[-1].end():].strip()
+    return f"FINAL_ANSWER: {answer}" if answer else t
+
+
+_OBS_CAP = 4000  # cap persisted observations so the eval JSONL stays readable
 
 from openjarvis.agents.hybrid.expert_registry import orchestrator_catalog
 from openjarvis.agents.hybrid.toolorchestra import rollout as _rollout_mod
@@ -138,6 +157,9 @@ class OrchestratorBackend(InferenceBackend):
                 api_key=self.api_key,
                 temperature=temp,
                 max_tokens=max_tokens,
+                # Serving a fine-tuned model: JSON <tool_call> format in the system
+                # prompt, no tools= param (matches how it was trained/serialized).
+                native_tools=False,
             )
             dispatch = make_dispatch(self._dispatch_cfg)
             rollout = _rollout_mod.run_unified_rollout(
@@ -146,6 +168,10 @@ class OrchestratorBackend(InferenceBackend):
                 call_orchestrator=call_orch,
                 dispatch=dispatch,
                 max_turns=self.max_turns,
+                # Match TRAINING: the model was fine-tuned on anonymized expert
+                # labels (expert_xxxx), so it only picks valid labels / routes
+                # correctly when it sees the same anonymized names at inference.
+                anonymize=True,
             )
         except Exception as exc:  # noqa: BLE001 - surface as a failed sample
             return {
@@ -162,8 +188,9 @@ class OrchestratorBackend(InferenceBackend):
 
         latency = time.time() - started
         total_tokens = int(getattr(rollout, "tokens", 0) or 0)
+        anon_map = getattr(rollout, "anon_map", None) or {}
         return {
-            "content": rollout.final_answer or "",
+            "content": _clean_final_answer(rollout.final_answer or ""),
             # The rollout reports a single combined token count; we surface it
             # as completion_tokens so it still flows into total-token telemetry.
             "usage": {
@@ -181,6 +208,23 @@ class OrchestratorBackend(InferenceBackend):
                 "tool_calls": [
                     {"name": n, "arguments": a} for n, a in rollout.tool_calls()
                 ],
+                # Full step-by-step trace so eval samples are inspectable
+                # (format_eval_sample.py renders this). Observations capped.
+                "anon_map": anon_map,
+                "turns": [
+                    {
+                        "reasoning": t.reasoning or "",
+                        "tool_name": t.tool_name,
+                        "real_model": anon_map.get(t.tool_name) if t.tool_name else None,
+                        "arguments": t.arguments,
+                        "observation": (
+                            (t.observation or "")[:_OBS_CAP]
+                            + ("…[truncated]" if t.observation and len(t.observation) > _OBS_CAP else "")
+                        ),
+                    }
+                    for t in (getattr(rollout, "turns", []) or [])
+                ],
+                "final_answer": _clean_final_answer(rollout.final_answer or ""),
             },
         }
 

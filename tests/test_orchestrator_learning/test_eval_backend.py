@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from openjarvis.agents.hybrid.toolorchestra.rollout import UnifiedTurn
 from openjarvis.learning.intelligence.orchestrator import eval_backend as eb
 from openjarvis.learning.intelligence.orchestrator.eval_backend import (
     OrchestratorBackend,
@@ -26,7 +27,14 @@ class _CannedRollout:
         self.tokens = 42
         self.num_tool_calls = 1
         self.parse_failures = 0
-        self.turns = [object()]
+        self.anon_map = {}
+        # generate_full now serializes a per-turn trace (reasoning / tool_name /
+        # arguments / observation), so turns must be real UnifiedTurn-shaped
+        # objects, not bare object() placeholders.
+        self.turns = [
+            UnifiedTurn(reasoning="let me search", tool_name="web_search",
+                        arguments={"query": "x"}, observation="result"),
+        ]
 
     def tool_calls(self):
         return [("web_search", {"query": "x"})]

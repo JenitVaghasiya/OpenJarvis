@@ -301,8 +301,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     finally:
         backend.close()
 
+    # Resolve the EXACT model behind the served alias (e.g. "gemma-sft" ->
+    # the real id + checkpoint path vLLM reports), so results are self-identifying
+    # instead of an opaque label. Best-effort: never fail the summary over it.
+    served_id, served_path = args.orchestrator_model, None
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            args.orchestrator_endpoint.rstrip("/") + "/models",
+            headers={"Authorization": f"Bearer {args.orchestrator_api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.load(resp).get("data", [])
+        if data:
+            served_id = data[0].get("id", served_id)
+            # vLLM reports the loaded checkpoint path in `root` (or `parent`).
+            served_path = data[0].get("root") or data[0].get("parent")
+    except Exception:
+        pass
+
     combined = {
         "orchestrator_model": args.orchestrator_model,
+        "orchestrator_served_id": served_id,
+        "orchestrator_model_path": served_path,
         "orchestrator_endpoint": args.orchestrator_endpoint,
         "judge_model": args.judge_model,
         "judge_engine": args.judge_engine,

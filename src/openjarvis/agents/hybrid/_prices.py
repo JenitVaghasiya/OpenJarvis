@@ -34,6 +34,14 @@ PRICES: dict[str, tuple[float, float]] = {
     "qwen/qwen-2.5-coder-32b-instruct": (0.08, 0.18),
     "qwen/qwen3-32b": (0.10, 0.30),
     "meta-llama/llama-3.3-70b-instruct": (0.13, 0.39),
+    # OpenRouter slugs for the orchestrator's local-OSS class when routed via
+    # OpenRouter instead of self-hosted vLLM. ESTIMATES — no public list price
+    # exists yet for these Qwen3.5/3.6 builds; scaled by active-param size.
+    # VERIFY against openrouter.ai before trusting the cost-aware reward numbers.
+    "qwen/qwen3.5-9b":        (0.05, 0.10),
+    "qwen/qwen3.6-27b":       (0.10, 0.30),
+    "qwen/qwen3.5-122b-a10b": (0.20, 0.60),
+    "qwen/qwen3.5-397b-a17b": (0.40, 1.20),
 }
 
 # Models whose API rejects an explicit `temperature` param — callers should
@@ -42,6 +50,10 @@ NO_TEMP_PREFIXES: tuple[str, ...] = (
     "claude-opus-4-7",
     "claude-sonnet-4-7",
     "claude-haiku-4-7",
+    # 4-8 family also rejects `temperature` ("deprecated for this model").
+    "claude-opus-4-8",
+    "claude-sonnet-4-8",
+    "claude-haiku-4-8",
 )
 
 

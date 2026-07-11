@@ -60,7 +60,9 @@ def test_run_unified_rollout_terminates_on_no_tool_call():
     ]
     calls = iter(scripted)
 
-    def call_orch(system, user, specs):
+    def call_orch(messages, specs):
+        # Signature is now (messages, specs): the rollout drives a running
+        # system/user/assistant/tool conversation, not a flattened (system, user).
         return next(calls)
 
     def dispatch(tool, args):
@@ -81,7 +83,11 @@ def test_serialize_record_shape_and_tool_call_tags():
         turns=[
             UnifiedTurn(reasoning="think", tool_name="qwen3_32b",
                         arguments={"input": "q"}, observation="obs"),
-            UnifiedTurn(reasoning="done", tool_name=None),
+            # The final turn's reasoning IS the model's real final output (it
+            # already contains the answer). The serializer now renders this turn
+            # via _final_answer_block(turn.reasoning), not rollout.final_answer.
+            UnifiedTurn(reasoning="The result is 42.\nFINAL_ANSWER: 42",
+                        tool_name=None),
         ],
         final_answer="42", cost_usd=0.02, tokens=30, num_tool_calls=1,
     )
@@ -131,7 +137,9 @@ def test_generate_sft_dataset_end_to_end(tmp_path):
                     UnifiedTurn("", "refund", {"user": "8612"}, "ok"),
                     UnifiedTurn("done", None),
                 ],
-                final_answer="refunded $20.90", cost_usd=0.03,
+                # num_tool_calls must reflect the two routed calls: the structural
+                # _target_is_clean gate drops a trajectory with num_tool_calls < 1.
+                final_answer="refunded $20.90", cost_usd=0.03, num_tool_calls=2,
             )
         return UnifiedRollout(turns=[UnifiedTurn("x", "cancel", {}, "ok")],
                               final_answer="nope", cost_usd=0.05)

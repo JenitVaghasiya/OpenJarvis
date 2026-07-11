@@ -136,11 +136,14 @@ def test_orchestrator_catalog_two_model_classes_plus_basics():
     by = tools_by_name(cat)
     assert by["gpt_5_5"].category == CATEGORY_CLOUD_FRONTIER
     assert by["claude_opus_4_8"].category == CATEGORY_CLOUD_FRONTIER
+    # Default routing for every model tool is OpenRouter (no servers required).
     for n in ("qwen3_5_9b", "qwen3_6_27b_fp8", "qwen3_5_122b_a10b_fp8",
               "qwen3_5_397b_a17b_fp8"):
         assert by[n].category == CATEGORY_LOCAL_OSS
-        assert by[n].backend_type == "vllm"
-        assert by[n].price_in == 0.0 and by[n].price_out == 0.0
+        assert by[n].backend_type == "openrouter"
+        assert by[n].base_url is None
+        # OpenRouter routing carries the slug + a (estimated) per-token price.
+        assert "/" in by[n].model and by[n].price_in > 0.0
 
 
 def test_orchestrator_catalog_categories_present():
@@ -167,19 +170,52 @@ def test_orchestrator_specs_include_category_field():
 
 
 def test_orchestrator_local_models_get_base_url_when_provided():
+    # An endpoint switches that model from the OpenRouter default to local vLLM.
     cat = orchestrator_catalog(
         local_endpoints={
             "Qwen/Qwen3.5-9B": "http://x/v1",
             "Qwen/Qwen3.6-27B-FP8": "http://y/v1",
         })
     by = tools_by_name(cat)
+    assert by["qwen3_5_9b"].backend_type == "vllm"
     assert by["qwen3_5_9b"].base_url == "http://x/v1"
+    assert by["qwen3_5_9b"].price_in == 0.0 and by["qwen3_5_9b"].price_out == 0.0
     assert by["qwen3_6_27b_fp8"].base_url == "http://y/v1"
-    # Unmapped local model -> base_url None.
+    # Unmapped local model -> stays on the OpenRouter default (base_url None).
+    assert by["qwen3_5_122b_a10b_fp8"].backend_type == "openrouter"
     assert by["qwen3_5_122b_a10b_fp8"].base_url is None
     # Cloud frontier carries real pricing.
     assert by["claude_opus_4_8"].price_in > 0.0
     assert by["gpt_5_5"].price_in > 0.0
+
+
+def test_orchestrator_model_backends_override():
+    # Force a cloud model onto OpenRouter and a local model onto vLLM explicitly.
+    cat = orchestrator_catalog(
+        model_backends={
+            "claude-opus-4-8": "openrouter",
+            "Qwen/Qwen3.5-397B-A17B-FP8": "vllm",
+        },
+        local_endpoints={"Qwen/Qwen3.5-397B-A17B-FP8": "http://z/v1"},
+    )
+    by = tools_by_name(cat)
+    assert by["claude_opus_4_8"].backend_type == "openrouter"
+    assert by["claude_opus_4_8"].model == "anthropic/claude-opus-4.8"
+    # No override for gpt-5.5 -> it defaults to its NATIVE first-party API
+    # (openai), not OpenRouter. Frontier models hit their native provider by
+    # default; OpenRouter is only the fallback for OSS/local models or when
+    # explicitly requested via model_backends.
+    assert by["gpt_5_5"].backend_type == "openai"  # native default
+    assert by["gpt_5_5"].model == "gpt-5.5"
+    assert by["qwen3_5_397b_a17b_fp8"].backend_type == "vllm"
+    assert by["qwen3_5_397b_a17b_fp8"].base_url == "http://z/v1"
+
+
+def test_orchestrator_openrouter_slug_override():
+    cat = orchestrator_catalog(
+        openrouter_slugs={"Qwen/Qwen3.5-9B": "qwen/qwen3.5-9b-custom"})
+    by = tools_by_name(cat)
+    assert by["qwen3_5_9b"].model == "qwen/qwen3.5-9b-custom"
 
 
 def test_openjarvis_tool_bridges_real_tool_with_custom_schema():
