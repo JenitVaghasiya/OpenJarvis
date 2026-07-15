@@ -28,6 +28,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "braintrust>=0.0.150",
     "click>=8",
     "datasets>=4.5.0",
     "ddgs>=9.11.4",

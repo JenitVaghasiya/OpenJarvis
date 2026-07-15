@@ -11,6 +11,7 @@ from __future__ import annotations
 
 # USD per million tokens, (input, output). Local models = 0.
 PRICES: dict[str, tuple[float, float]] = {
+    "claude-opus-4-8": (5.00, 25.0),
     "claude-opus-4-7": (5.00, 25.0),
     "claude-sonnet-4-6": (3.00, 15.0),
     "claude-haiku-4-5": (1.00, 5.00),
@@ -33,6 +34,17 @@ PRICES: dict[str, tuple[float, float]] = {
     "qwen/qwen-2.5-coder-32b-instruct": (0.08, 0.18),
     "qwen/qwen3-32b": (0.10, 0.30),
     "meta-llama/llama-3.3-70b-instruct": (0.13, 0.39),
+    # OpenRouter slugs for the orchestrator's local-OSS class when routed via
+    # OpenRouter instead of self-hosted vLLM. OpenRouter list price, checked
+    # 2026-07-11. These replace earlier active-param-scaled guesses that were
+    # 2-5x low on output; the cost-aware reward reads these directly, so the
+    # guesses were systematically undercharging the mid/large Qwen experts.
+    "qwen/qwen3.5-9b": (0.10, 0.15),
+    # qwen3.6-27b is not listed on OpenRouter; qwen3.5-27b is the nearest real
+    # quote and is what we charge for it.
+    "qwen/qwen3.6-27b": (0.195, 1.56),
+    "qwen/qwen3.5-122b-a10b": (0.26, 2.08),
+    "qwen/qwen3.5-397b-a17b": (0.385, 2.45),
 }
 
 # Models whose API rejects an explicit `temperature` param — callers should
@@ -41,6 +53,10 @@ NO_TEMP_PREFIXES: tuple[str, ...] = (
     "claude-opus-4-7",
     "claude-sonnet-4-7",
     "claude-haiku-4-7",
+    # 4-8 family also rejects `temperature` ("deprecated for this model").
+    "claude-opus-4-8",
+    "claude-sonnet-4-8",
+    "claude-haiku-4-8",
 )
 
 
